@@ -36,26 +36,121 @@ try:
 except ImportError:
     REPLICATE_AVAILABLE = False
 
-# --- 배경 제거 함수 ---
-def remove_background(image, target_color, tolerance, edge_smoothing=0):
-    """배경색을 제거하고 투명하게 만듦"""
+# --- 다중 배경색 제거 함수 (개선된 버전) ---
+def remove_background_multi(image, target_colors, tolerance, edge_smoothing=0.0, use_hsv=True):
+    """
+    여러 배경색을 제거하고 투명하게 만듦 (그라데이션 대응)
+
+    Args:
+        image: BGR 또는 BGRA 이미지
+        target_colors: RGB 색상 튜플의 리스트 [(r,g,b), ...]
+        tolerance: 색상 허용 범위 (0-150)
+        edge_smoothing: 경계선 부드럽게 (0.0-10.0, 0.1 단위)
+        use_hsv: HSV 색상 공간도 함께 사용 (그라데이션 대응)
+    """
     if len(image.shape) == 3 and image.shape[2] == 3:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
 
-    lower_bound = np.array([max(c - tolerance, 0) for c in target_color])
-    upper_bound = np.array([min(c + tolerance, 255) for c in target_color])
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
-    mask = cv2.inRange(rgb_image, lower_bound, upper_bound)
-    mask_inv = cv2.bitwise_not(mask)
+    combined_mask = np.zeros(rgb_image.shape[:2], dtype=np.uint8)
 
+    for target_color in target_colors:
+        # RGB 기반 마스크
+        lower_bound = np.array([max(c - tolerance, 0) for c in target_color])
+        upper_bound = np.array([min(c + tolerance, 255) for c in target_color])
+        rgb_mask = cv2.inRange(rgb_image, lower_bound, upper_bound)
+
+        if use_hsv:
+            # HSV 기반 마스크 (그라데이션 색상 대응)
+            hsv_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2HSV)
+            target_hsv = cv2.cvtColor(np.uint8([[target_color]]), cv2.COLOR_RGB2HSV)[0][0]
+
+            # HSV 허용 범위 (Hue는 순환적이므로 별도 처리)
+            h_tol = max(15, tolerance // 5)  # 색상(Hue) 허용 범위
+            s_tol = tolerance  # 채도 허용 범위
+            v_tol = tolerance  # 명도 허용 범위
+
+            lower_hsv = np.array([max(target_hsv[0] - h_tol, 0),
+                                  max(target_hsv[1] - s_tol, 0),
+                                  max(target_hsv[2] - v_tol, 0)])
+            upper_hsv = np.array([min(target_hsv[0] + h_tol, 179),
+                                  min(target_hsv[1] + s_tol, 255),
+                                  min(target_hsv[2] + v_tol, 255)])
+
+            hsv_mask = cv2.inRange(hsv_image, lower_hsv, upper_hsv)
+
+            # RGB와 HSV 마스크 결합 (둘 중 하나라도 매칭되면 제거)
+            color_mask = cv2.bitwise_or(rgb_mask, hsv_mask)
+        else:
+            color_mask = rgb_mask
+
+        # 전체 마스크에 추가
+        combined_mask = cv2.bitwise_or(combined_mask, color_mask)
+
+    # 마스크 반전 (배경=0, 객체=255)
+    mask_inv = cv2.bitwise_not(combined_mask)
+
+    # 경계선 부드럽게 처리 (개선된 방식)
     if edge_smoothing > 0:
-        blur_size = edge_smoothing * 2 + 1
-        mask_inv = cv2.GaussianBlur(mask_inv, (blur_size, blur_size), 0)
-        kernel = np.ones((3, 3), np.uint8)
-        mask_inv = cv2.morphologyEx(mask_inv, cv2.MORPH_CLOSE, kernel)
+        # 부드러운 블러 크기 계산 (0.1 단위 지원)
+        blur_size = int(edge_smoothing * 2) + 1
+        if blur_size % 2 == 0:
+            blur_size += 1
 
+        # 가우시안 블러로 경계선 부드럽게
+        mask_smooth = cv2.GaussianBlur(mask_inv, (blur_size, blur_size), 0)
+
+        # 모폴로지 연산으로 작은 구멍 채우기
+        kernel_size = max(3, int(edge_smoothing))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        mask_smooth = cv2.morphologyEx(mask_smooth, cv2.MORPH_CLOSE, kernel)
+
+        mask_inv = mask_smooth
+
+    # 알파 채널 적용
     image[:, :, 3] = mask_inv
+
+    # ★ 핵심: 투명/반투명 영역의 RGB를 인접 불투명 픽셀로 채움 (색 번짐 방지)
+    image = fill_transparent_with_nearby_color(image)
+
     return image
+
+def fill_transparent_with_nearby_color(image):
+    """
+    투명/반투명 영역의 RGB 값을 인접한 불투명 픽셀 색상으로 채움
+    GIF 변환 시 보라색 테두리 방지
+    """
+    alpha = image[:, :, 3]
+    rgb = image[:, :, :3].copy()
+
+    # 불투명 영역 마스크 (알파 > 200)
+    opaque_mask = (alpha > 200).astype(np.uint8)
+
+    # 투명/반투명 영역 마스크
+    transparent_mask = (alpha <= 200).astype(np.uint8)
+
+    if np.sum(transparent_mask) == 0:
+        return image
+
+    # 각 채널에 대해 불투명 영역 색상을 투명 영역으로 팽창
+    kernel = np.ones((5, 5), np.uint8)
+    for c in range(3):
+        channel = rgb[:, :, c].astype(np.float32)
+        # 불투명 영역만 사용하여 팽창
+        masked_channel = channel * opaque_mask
+        dilated = cv2.dilate(masked_channel, kernel, iterations=3)
+        # 투명 영역에 팽창된 색상 적용
+        rgb[:, :, c] = np.where(transparent_mask > 0, dilated, channel).astype(np.uint8)
+
+    image[:, :, :3] = rgb
+    return image
+
+# --- 단일 배경색 제거 (하위 호환성) ---
+def remove_background(image, target_color, tolerance, edge_smoothing=0):
+    """배경색을 제거하고 투명하게 만듦 (단일 색상용 래퍼)"""
+    return remove_background_multi(image, [target_color], tolerance, float(edge_smoothing), use_hsv=False)
 
 # --- 로고 영역 제거 ---
 def remove_logo_area(image, regions):
@@ -96,26 +191,31 @@ def create_sprite_sheet(images, columns=0):
             sheet.paste(img, ((idx % columns) * width, (idx // columns) * height))
     return sheet
 
-# --- 단일 프레임 처리 (미리보기용) ---
-def process_single_frame(frame_rgb, bg_color_rgb, tolerance, edge_smoothing, logo_regions=None):
+# --- 단일 프레임 처리 (미리보기용) - 다중 색상 지원 ---
+def process_single_frame(frame_rgb, bg_colors_rgb, tolerance, edge_smoothing, logo_regions=None, use_hsv=True):
+    """
+    단일 프레임의 배경 제거 처리 (미리보기용)
+
+    Args:
+        frame_rgb: RGB 프레임
+        bg_colors_rgb: RGB 색상 튜플 또는 리스트 [(r,g,b), ...]
+        tolerance: 색상 허용 범위
+        edge_smoothing: 경계선 부드럽게 (0.0-10.0)
+        logo_regions: 로고 제거 영역
+        use_hsv: HSV 색상 공간 사용 여부
+    """
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+    # 단일 색상을 리스트로 변환
+    if isinstance(bg_colors_rgb, tuple) and len(bg_colors_rgb) == 3 and isinstance(bg_colors_rgb[0], int):
+        bg_colors_rgb = [bg_colors_rgb]
 
     if logo_regions:
         frame_bgra = remove_logo_area(frame_bgr.copy(), logo_regions)
-        rgb_image = cv2.cvtColor(frame_bgra, cv2.COLOR_BGRA2RGB)
-        lower_bound = np.array([max(c - tolerance, 0) for c in bg_color_rgb])
-        upper_bound = np.array([min(c + tolerance, 255) for c in bg_color_rgb])
-        mask = cv2.inRange(rgb_image, lower_bound, upper_bound)
-        mask_inv = cv2.bitwise_not(mask)
-        if edge_smoothing > 0:
-            blur_size = edge_smoothing * 2 + 1
-            mask_inv = cv2.GaussianBlur(mask_inv, (blur_size, blur_size), 0)
-            kernel = np.ones((3, 3), np.uint8)
-            mask_inv = cv2.morphologyEx(mask_inv, cv2.MORPH_CLOSE, kernel)
-        frame_bgra[:, :, 3] = cv2.bitwise_and(frame_bgra[:, :, 3], mask_inv)
-        processed_cv = frame_bgra
+        # 다중 색상 배경 제거 적용
+        processed_cv = remove_background_multi(frame_bgra, bg_colors_rgb, tolerance, edge_smoothing, use_hsv)
     else:
-        processed_cv = remove_background(frame_bgr, bg_color_rgb, tolerance, edge_smoothing)
+        processed_cv = remove_background_multi(frame_bgr, bg_colors_rgb, tolerance, edge_smoothing, use_hsv)
 
     return Image.fromarray(cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGBA))
 
@@ -147,13 +247,32 @@ def generate_video_from_image(image_file, api_token, prompt="", video_length="25
 
     return output
 
-# --- 비디오 처리 파이프라인 ---
-def process_video_to_sprites(video_path, bg_color_rgb, tolerance, edge_smoothing,
+# --- 비디오 처리 파이프라인 (다중 색상 지원) ---
+def process_video_to_sprites(video_path, bg_colors_rgb, tolerance, edge_smoothing,
                               frame_interval, max_frames, use_custom_size,
-                              output_width, output_height, logo_regions=None):
+                              output_width, output_height, logo_regions=None, use_hsv=True):
+    """
+    비디오를 스프라이트 이미지로 변환
+
+    Args:
+        video_path: 비디오 파일 경로
+        bg_colors_rgb: RGB 색상 튜플 또는 리스트 [(r,g,b), ...]
+        tolerance: 색상 허용 범위
+        edge_smoothing: 경계선 부드럽게 (0.0-10.0)
+        frame_interval: 프레임 추출 간격
+        max_frames: 최대 프레임 수
+        use_custom_size: 크기 직접 지정 여부
+        output_width, output_height: 출력 크기
+        logo_regions: 로고 제거 영역
+        use_hsv: HSV 색상 공간 사용 여부
+    """
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     processed_pil_images = []
+
+    # 단일 색상을 리스트로 변환
+    if isinstance(bg_colors_rgb, tuple) and len(bg_colors_rgb) == 3 and isinstance(bg_colors_rgb[0], int):
+        bg_colors_rgb = [bg_colors_rgb]
 
     frame_idx = 0
     extracted_count = 0
@@ -166,20 +285,9 @@ def process_video_to_sprites(video_path, bg_color_rgb, tolerance, edge_smoothing
         if frame_idx % frame_interval == 0 and extracted_count < max_frames:
             if logo_regions:
                 frame = remove_logo_area(frame, logo_regions)
-                processed_cv = frame.copy()
-                rgb_image = cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGB)
-                lower_bound = np.array([max(c - tolerance, 0) for c in bg_color_rgb])
-                upper_bound = np.array([min(c + tolerance, 255) for c in bg_color_rgb])
-                mask = cv2.inRange(rgb_image, lower_bound, upper_bound)
-                mask_inv = cv2.bitwise_not(mask)
-                if edge_smoothing > 0:
-                    blur_size = edge_smoothing * 2 + 1
-                    mask_inv = cv2.GaussianBlur(mask_inv, (blur_size, blur_size), 0)
-                    kernel = np.ones((3, 3), np.uint8)
-                    mask_inv = cv2.morphologyEx(mask_inv, cv2.MORPH_CLOSE, kernel)
-                processed_cv[:, :, 3] = cv2.bitwise_and(processed_cv[:, :, 3], mask_inv)
-            else:
-                processed_cv = remove_background(frame, bg_color_rgb, tolerance, edge_smoothing)
+
+            # 다중 색상 배경 제거 적용
+            processed_cv = remove_background_multi(frame, bg_colors_rgb, tolerance, edge_smoothing, use_hsv)
 
             pil_img = Image.fromarray(cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGBA))
 
@@ -316,6 +424,12 @@ if 'logo_regions' not in st.session_state:
     st.session_state.logo_regions = []
 if 'picked_color' not in st.session_state:
     st.session_state.picked_color = "#000000"
+# 다중 배경색 제거 목록
+if 'bg_colors_to_remove' not in st.session_state:
+    st.session_state.bg_colors_to_remove = []
+# HSV 색상 공간 사용 여부
+if 'use_hsv' not in st.session_state:
+    st.session_state.use_hsv = True
 
 # ===== 사이드바: 모드 선택 =====
 with st.sidebar:
@@ -467,37 +581,44 @@ REPLICATE_API_TOKEN = "your_token_here"
 
             # 배경 제거 옵션
             with st.expander("🎨 배경 제거 옵션", expanded=True):
-                st.markdown("#### 🎯 배경색 선택")
-                st.caption("아래 추천 색상을 클릭하거나 이미지에서 직접 색상을 선택하세요.")
+                st.markdown("#### 🎯 제거할 배경색 선택 (다중 선택 가능)")
+                st.caption("여러 색상을 추가하여 그라데이션 배경도 깔끔하게 제거할 수 있습니다.")
 
                 # 자동 추출된 배경색 후보 - 큰 사각 박스로 표시
                 dominant_colors = extract_dominant_colors(first_frame_rgb, 8)
-                st.markdown("##### 📌 추천 배경색 (클릭하여 선택)")
+                st.markdown("##### 📌 추천 배경색 (클릭하여 추가)")
 
                 # 색상 박스를 더 크게 표시
                 color_box_html = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;'>"
                 for i, color in enumerate(dominant_colors):
-                    is_selected = color == st.session_state.picked_color
-                    border = "3px solid #00ff00" if is_selected else "2px solid #555"
+                    is_in_list = color in st.session_state.bg_colors_to_remove
+                    border = "3px solid #00ff00" if is_in_list else "2px solid #555"
+                    check_mark = "✓" if is_in_list else ""
                     color_box_html += f"""
                     <div style='width:60px;height:60px;background:{color};border:{border};border-radius:8px;cursor:pointer;
-                    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);'
-                    title='{color}'></div>
+                    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);
+                    font-size:24px;color:#fff;text-shadow:0 0 3px #000;'
+                    title='{color}'>{check_mark}</div>
                     """
                 color_box_html += "</div>"
                 st.markdown(color_box_html, unsafe_allow_html=True)
 
-                # 버튼 형식으로 색상 선택 (실제 클릭 처리)
+                # 버튼 형식으로 색상 추가/제거
                 btn_cols = st.columns(len(dominant_colors))
                 for i, color in enumerate(dominant_colors):
                     with btn_cols[i]:
-                        if st.button(f"선택", key=f"color_btn_ai_{i}", use_container_width=True):
-                            st.session_state.picked_color = color
+                        is_in_list = color in st.session_state.bg_colors_to_remove
+                        btn_label = "제거" if is_in_list else "추가"
+                        if st.button(btn_label, key=f"color_btn_ai_{i}", use_container_width=True):
+                            if is_in_list:
+                                st.session_state.bg_colors_to_remove.remove(color)
+                            else:
+                                st.session_state.bg_colors_to_remove.append(color)
                             st.rerun()
 
                 st.markdown("---")
                 st.markdown("##### 🔍 이미지에서 직접 선택")
-                st.caption("이미지를 클릭하여 원하는 색상 선택")
+                st.caption("이미지를 클릭하여 색상 추가")
 
                 # PIL Image로 변환하여 클릭 가능한 이미지 표시
                 frame_pil = Image.fromarray(first_frame_rgb)
@@ -512,32 +633,60 @@ REPLICATE_API_TOKEN = "your_token_here"
                     orig_x = int(coords["x"] / scale)
                     orig_y = int(coords["y"] / scale)
                     picked = get_color_at_position(first_frame_rgb, orig_x, orig_y)
-                    if picked != st.session_state.picked_color:
-                        st.session_state.picked_color = picked
+                    if picked not in st.session_state.bg_colors_to_remove:
+                        st.session_state.bg_colors_to_remove.append(picked)
                         st.rerun()
 
-                # 현재 선택된 색상 표시
+                # 현재 선택된 색상 목록 표시
                 st.markdown("---")
-                st.markdown(f"""
-                <div style='display:flex;align-items:center;gap:15px;padding:10px;background:#1e1e1e;border-radius:8px;'>
-                    <div style='width:80px;height:50px;background:{st.session_state.picked_color};border:3px solid #fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.3);'></div>
-                    <div>
-                        <div style='font-size:14px;color:#aaa;'>선택된 제거 배경색</div>
-                        <div style='font-size:20px;font-weight:bold;color:#fff;'>{st.session_state.picked_color}</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown("##### 🎨 제거할 색상 목록")
+
+                if st.session_state.bg_colors_to_remove:
+                    colors_html = "<div style='display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;'>"
+                    for color in st.session_state.bg_colors_to_remove:
+                        colors_html += f"""
+                        <div style='display:flex;flex-direction:column;align-items:center;'>
+                            <div style='width:50px;height:50px;background:{color};border:2px solid #fff;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.3);'></div>
+                            <div style='font-size:10px;color:#aaa;margin-top:4px;'>{color}</div>
+                        </div>
+                        """
+                    colors_html += "</div>"
+                    st.markdown(colors_html, unsafe_allow_html=True)
+
+                    # 개별 색상 제거 버튼
+                    remove_cols = st.columns(min(len(st.session_state.bg_colors_to_remove), 8))
+                    for i, color in enumerate(st.session_state.bg_colors_to_remove[:8]):
+                        with remove_cols[i]:
+                            if st.button("✕", key=f"remove_color_ai_{i}", use_container_width=True):
+                                st.session_state.bg_colors_to_remove.remove(color)
+                                st.rerun()
+
+                    if st.button("🗑️ 모든 색상 초기화", key="clear_colors_ai"):
+                        st.session_state.bg_colors_to_remove = []
+                        st.rerun()
+                else:
+                    st.info("💡 위에서 제거할 배경색을 선택하세요.")
 
                 st.markdown("---")
-                col1, col2, col3 = st.columns(3)
+                st.markdown("##### ⚙️ 제거 설정")
+
+                col1, col2 = st.columns(2)
                 with col1:
-                    bg_color_hex = st.color_picker("직접 색상 입력", st.session_state.picked_color, key="bg_picker_ai")
-                    if bg_color_hex != st.session_state.picked_color:
-                        st.session_state.picked_color = bg_color_hex
+                    bg_color_hex = st.color_picker("직접 색상 추가", "#ffffff", key="bg_picker_ai")
+                    if st.button("➕ 색상 추가", key="add_custom_color_ai"):
+                        if bg_color_hex not in st.session_state.bg_colors_to_remove:
+                            st.session_state.bg_colors_to_remove.append(bg_color_hex)
+                            st.rerun()
                 with col2:
-                    tolerance = st.slider("민감도", 0, 150, 100)
-                with col3:
-                    edge_smoothing = st.slider("경계선 부드럽게", 0, 10, 3)
+                    use_hsv = st.checkbox("🌈 HSV 색상 매칭 (그라데이션 대응)", value=st.session_state.use_hsv, key="use_hsv_ai")
+                    st.session_state.use_hsv = use_hsv
+                    st.caption("비슷한 색조의 그라데이션도 함께 제거")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    tolerance = st.slider("민감도 (색상 허용 범위)", 0, 150, 80, help="높을수록 비슷한 색상도 제거")
+                with col2:
+                    edge_smoothing = st.slider("경계선 부드럽게", 0.0, 10.0, 1.0, step=0.1, help="높을수록 부드러운 경계")
 
             # 출력 설정
             with st.expander("📐 출력 설정", expanded=False):
@@ -558,7 +707,17 @@ REPLICATE_API_TOKEN = "your_token_here"
 
             # 미리보기
             st.markdown("### 👁️ 미리보기")
-            bg_color_rgb = tuple(int(bg_color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+
+            # 다중 색상을 RGB 튜플 리스트로 변환
+            bg_colors_rgb = []
+            for hex_color in st.session_state.bg_colors_to_remove:
+                rgb = tuple(int(hex_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                bg_colors_rgb.append(rgb)
+
+            # 선택된 색상이 없으면 기본 흰색 사용
+            if not bg_colors_rgb:
+                bg_colors_rgb = [(255, 255, 255)]
+                st.warning("⚠️ 제거할 배경색을 선택해주세요. 기본값(흰색)을 사용합니다.")
 
             col1, col2 = st.columns(2)
             with col1:
@@ -566,7 +725,8 @@ REPLICATE_API_TOKEN = "your_token_here"
                 st.image(first_frame_rgb, width="stretch")
             with col2:
                 st.markdown("**배경 제거 적용**")
-                preview = process_single_frame(first_frame_rgb, bg_color_rgb, tolerance, edge_smoothing)
+                preview = process_single_frame(first_frame_rgb, bg_colors_rgb, tolerance, edge_smoothing,
+                                               use_hsv=st.session_state.use_hsv)
                 checker = create_checker_background(preview.width, preview.height)
                 checker.paste(preview, (0, 0), preview)
                 st.image(checker, width="stretch")
@@ -577,9 +737,10 @@ REPLICATE_API_TOKEN = "your_token_here"
                 with st.spinner("변환 중..."):
                     processed_images, _ = process_video_to_sprites(
                         st.session_state.generated_video_path,
-                        bg_color_rgb, tolerance, edge_smoothing,
+                        bg_colors_rgb, tolerance, edge_smoothing,
                         frame_interval, max_frames, use_custom_size,
-                        output_width, output_height, st.session_state.logo_regions
+                        output_width, output_height, st.session_state.logo_regions,
+                        use_hsv=st.session_state.use_hsv
                     )
                     st.session_state.processed_images = processed_images
                     st.session_state.gif_speed = gif_speed
@@ -635,37 +796,44 @@ else:
             first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
 
             with st.expander("🎨 배경 제거 옵션", expanded=True):
-                st.markdown("#### 🎯 배경색 선택")
-                st.caption("아래 추천 색상을 클릭하거나 이미지에서 직접 색상을 선택하세요.")
+                st.markdown("#### 🎯 제거할 배경색 선택 (다중 선택 가능)")
+                st.caption("여러 색상을 추가하여 그라데이션 배경도 깔끔하게 제거할 수 있습니다.")
 
                 # 자동 추출된 배경색 후보 - 큰 사각 박스로 표시
                 dominant_colors_v = extract_dominant_colors(first_frame_rgb, 8)
-                st.markdown("##### 📌 추천 배경색 (클릭하여 선택)")
+                st.markdown("##### 📌 추천 배경색 (클릭하여 추가)")
 
                 # 색상 박스를 더 크게 표시
                 color_box_html_v = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;'>"
                 for i, color in enumerate(dominant_colors_v):
-                    is_selected = color == st.session_state.picked_color
-                    border = "3px solid #00ff00" if is_selected else "2px solid #555"
+                    is_in_list = color in st.session_state.bg_colors_to_remove
+                    border = "3px solid #00ff00" if is_in_list else "2px solid #555"
+                    check_mark = "✓" if is_in_list else ""
                     color_box_html_v += f"""
                     <div style='width:60px;height:60px;background:{color};border:{border};border-radius:8px;cursor:pointer;
-                    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);'
-                    title='{color}'></div>
+                    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);
+                    font-size:24px;color:#fff;text-shadow:0 0 3px #000;'
+                    title='{color}'>{check_mark}</div>
                     """
                 color_box_html_v += "</div>"
                 st.markdown(color_box_html_v, unsafe_allow_html=True)
 
-                # 버튼 형식으로 색상 선택 (실제 클릭 처리)
+                # 버튼 형식으로 색상 추가/제거
                 btn_cols_v = st.columns(len(dominant_colors_v))
                 for i, color in enumerate(dominant_colors_v):
                     with btn_cols_v[i]:
-                        if st.button(f"선택", key=f"color_btn_video_{i}", use_container_width=True):
-                            st.session_state.picked_color = color
+                        is_in_list = color in st.session_state.bg_colors_to_remove
+                        btn_label = "제거" if is_in_list else "추가"
+                        if st.button(btn_label, key=f"color_btn_video_{i}", use_container_width=True):
+                            if is_in_list:
+                                st.session_state.bg_colors_to_remove.remove(color)
+                            else:
+                                st.session_state.bg_colors_to_remove.append(color)
                             st.rerun()
 
                 st.markdown("---")
                 st.markdown("##### 🔍 이미지에서 직접 선택")
-                st.caption("이미지를 클릭하여 원하는 색상 선택")
+                st.caption("이미지를 클릭하여 색상 추가")
 
                 # PIL Image로 변환하여 클릭 가능한 이미지 표시
                 frame_pil_v = Image.fromarray(first_frame_rgb)
@@ -680,32 +848,60 @@ else:
                     orig_x_v = int(coords_v["x"] / scale_v)
                     orig_y_v = int(coords_v["y"] / scale_v)
                     picked_v = get_color_at_position(first_frame_rgb, orig_x_v, orig_y_v)
-                    if picked_v != st.session_state.picked_color:
-                        st.session_state.picked_color = picked_v
+                    if picked_v not in st.session_state.bg_colors_to_remove:
+                        st.session_state.bg_colors_to_remove.append(picked_v)
                         st.rerun()
 
-                # 현재 선택된 색상 표시
+                # 현재 선택된 색상 목록 표시
                 st.markdown("---")
-                st.markdown(f"""
-                <div style='display:flex;align-items:center;gap:15px;padding:10px;background:#1e1e1e;border-radius:8px;'>
-                    <div style='width:80px;height:50px;background:{st.session_state.picked_color};border:3px solid #fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.3);'></div>
-                    <div>
-                        <div style='font-size:14px;color:#aaa;'>선택된 제거 배경색</div>
-                        <div style='font-size:20px;font-weight:bold;color:#fff;'>{st.session_state.picked_color}</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown("##### 🎨 제거할 색상 목록")
+
+                if st.session_state.bg_colors_to_remove:
+                    colors_html_v = "<div style='display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;'>"
+                    for color in st.session_state.bg_colors_to_remove:
+                        colors_html_v += f"""
+                        <div style='display:flex;flex-direction:column;align-items:center;'>
+                            <div style='width:50px;height:50px;background:{color};border:2px solid #fff;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.3);'></div>
+                            <div style='font-size:10px;color:#aaa;margin-top:4px;'>{color}</div>
+                        </div>
+                        """
+                    colors_html_v += "</div>"
+                    st.markdown(colors_html_v, unsafe_allow_html=True)
+
+                    # 개별 색상 제거 버튼
+                    remove_cols_v = st.columns(min(len(st.session_state.bg_colors_to_remove), 8))
+                    for i, color in enumerate(st.session_state.bg_colors_to_remove[:8]):
+                        with remove_cols_v[i]:
+                            if st.button("✕", key=f"remove_color_video_{i}", use_container_width=True):
+                                st.session_state.bg_colors_to_remove.remove(color)
+                                st.rerun()
+
+                    if st.button("🗑️ 모든 색상 초기화", key="clear_colors_video"):
+                        st.session_state.bg_colors_to_remove = []
+                        st.rerun()
+                else:
+                    st.info("💡 위에서 제거할 배경색을 선택하세요.")
 
                 st.markdown("---")
-                col1, col2, col3 = st.columns(3)
+                st.markdown("##### ⚙️ 제거 설정")
+
+                col1, col2 = st.columns(2)
                 with col1:
-                    bg_color_hex = st.color_picker("직접 색상 입력", st.session_state.picked_color, key="video_bg")
-                    if bg_color_hex != st.session_state.picked_color:
-                        st.session_state.picked_color = bg_color_hex
+                    bg_color_hex_v = st.color_picker("직접 색상 추가", "#ffffff", key="video_bg")
+                    if st.button("➕ 색상 추가", key="add_custom_color_video"):
+                        if bg_color_hex_v not in st.session_state.bg_colors_to_remove:
+                            st.session_state.bg_colors_to_remove.append(bg_color_hex_v)
+                            st.rerun()
                 with col2:
-                    tolerance = st.slider("민감도", 0, 150, 100, key="video_tol")
-                with col3:
-                    edge_smoothing = st.slider("경계선 부드럽게", 0, 10, 3, key="video_edge")
+                    use_hsv_v = st.checkbox("🌈 HSV 색상 매칭 (그라데이션 대응)", value=st.session_state.use_hsv, key="use_hsv_video")
+                    st.session_state.use_hsv = use_hsv_v
+                    st.caption("비슷한 색조의 그라데이션도 함께 제거")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    tolerance = st.slider("민감도 (색상 허용 범위)", 0, 150, 80, key="video_tol", help="높을수록 비슷한 색상도 제거")
+                with col2:
+                    edge_smoothing = st.slider("경계선 부드럽게", 0.0, 10.0, 1.0, step=0.1, key="video_edge", help="높을수록 부드러운 경계")
 
             with st.expander("📐 출력 설정", expanded=False):
                 col1, col2 = st.columns(2)
@@ -724,7 +920,17 @@ else:
 
             # 미리보기
             st.markdown("### 👁️ 미리보기")
-            bg_color_rgb = tuple(int(bg_color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+
+            # 다중 색상을 RGB 튜플 리스트로 변환
+            bg_colors_rgb_v = []
+            for hex_color in st.session_state.bg_colors_to_remove:
+                rgb = tuple(int(hex_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                bg_colors_rgb_v.append(rgb)
+
+            # 선택된 색상이 없으면 기본 흰색 사용
+            if not bg_colors_rgb_v:
+                bg_colors_rgb_v = [(255, 255, 255)]
+                st.warning("⚠️ 제거할 배경색을 선택해주세요. 기본값(흰색)을 사용합니다.")
 
             col1, col2 = st.columns(2)
             with col1:
@@ -732,18 +938,21 @@ else:
                 st.image(first_frame_rgb, width="stretch")
             with col2:
                 st.markdown("**배경 제거 적용**")
-                preview = process_single_frame(first_frame_rgb, bg_color_rgb, tolerance, edge_smoothing)
+                preview = process_single_frame(first_frame_rgb, bg_colors_rgb_v, tolerance, edge_smoothing,
+                                               use_hsv=st.session_state.use_hsv)
                 checker = create_checker_background(preview.width, preview.height)
                 checker.paste(preview, (0, 0), preview)
                 st.image(checker, width="stretch")
+                st.caption("🔲 체크무늬 = 투명 영역")
 
             if st.button("✨ 스프라이트 시트 생성", type="primary", width="stretch", key="video_convert"):
                 with st.spinner("변환 중..."):
                     processed_images, _ = process_video_to_sprites(
                         st.session_state.generated_video_path,
-                        bg_color_rgb, tolerance, edge_smoothing,
+                        bg_colors_rgb_v, tolerance, edge_smoothing,
                         frame_interval, max_frames, use_custom_size,
-                        output_width, output_height, []
+                        output_width, output_height, [],
+                        use_hsv=st.session_state.use_hsv
                     )
                     st.session_state.processed_images = processed_images
                     st.session_state.gif_speed = gif_speed
