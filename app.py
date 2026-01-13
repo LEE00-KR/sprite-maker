@@ -9,6 +9,7 @@ import io
 import requests
 import base64
 from dotenv import load_dotenv
+from streamlit_drawable_canvas import st_canvas
 
 # ============================================
 # API 토큰 설정 (가장 먼저 실행되어야 함)
@@ -149,10 +150,15 @@ def generate_video_from_image(image_file, api_token, prompt="", video_length="25
 # --- 비디오 처리 파이프라인 ---
 def process_video_to_sprites(video_path, bg_color_rgb, tolerance, edge_smoothing,
                               frame_interval, max_frames, use_custom_size,
-                              output_width, output_height, logo_regions=None):
+                              output_width, output_height, logo_regions=None,
+                              skip_start_frames=0, skip_end_frames=0):
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     processed_pil_images = []
+
+    # 트리밍 후 유효한 프레임 범위 계산
+    start_frame = skip_start_frames
+    end_frame = max(start_frame + 1, total_frames - skip_end_frames)
 
     frame_idx = 0
     extracted_count = 0
@@ -162,31 +168,33 @@ def process_video_to_sprites(video_path, bg_color_rgb, tolerance, edge_smoothing
         if not ret:
             break
 
-        if frame_idx % frame_interval == 0 and extracted_count < max_frames:
-            if logo_regions:
-                frame = remove_logo_area(frame, logo_regions)
-                processed_cv = frame.copy()
-                rgb_image = cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGB)
-                lower_bound = np.array([max(c - tolerance, 0) for c in bg_color_rgb])
-                upper_bound = np.array([min(c + tolerance, 255) for c in bg_color_rgb])
-                mask = cv2.inRange(rgb_image, lower_bound, upper_bound)
-                mask_inv = cv2.bitwise_not(mask)
-                if edge_smoothing > 0:
-                    blur_size = edge_smoothing * 2 + 1
-                    mask_inv = cv2.GaussianBlur(mask_inv, (blur_size, blur_size), 0)
-                    kernel = np.ones((3, 3), np.uint8)
-                    mask_inv = cv2.morphologyEx(mask_inv, cv2.MORPH_CLOSE, kernel)
-                processed_cv[:, :, 3] = cv2.bitwise_and(processed_cv[:, :, 3], mask_inv)
-            else:
-                processed_cv = remove_background(frame, bg_color_rgb, tolerance, edge_smoothing)
+        # 트리밍 범위 내의 프레임만 처리
+        if frame_idx >= start_frame and frame_idx < end_frame:
+            if (frame_idx - start_frame) % frame_interval == 0 and extracted_count < max_frames:
+                if logo_regions:
+                    frame = remove_logo_area(frame, logo_regions)
+                    processed_cv = frame.copy()
+                    rgb_image = cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGB)
+                    lower_bound = np.array([max(c - tolerance, 0) for c in bg_color_rgb])
+                    upper_bound = np.array([min(c + tolerance, 255) for c in bg_color_rgb])
+                    mask = cv2.inRange(rgb_image, lower_bound, upper_bound)
+                    mask_inv = cv2.bitwise_not(mask)
+                    if edge_smoothing > 0:
+                        blur_size = edge_smoothing * 2 + 1
+                        mask_inv = cv2.GaussianBlur(mask_inv, (blur_size, blur_size), 0)
+                        kernel = np.ones((3, 3), np.uint8)
+                        mask_inv = cv2.morphologyEx(mask_inv, cv2.MORPH_CLOSE, kernel)
+                    processed_cv[:, :, 3] = cv2.bitwise_and(processed_cv[:, :, 3], mask_inv)
+                else:
+                    processed_cv = remove_background(frame, bg_color_rgb, tolerance, edge_smoothing)
 
-            pil_img = Image.fromarray(cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGBA))
+                pil_img = Image.fromarray(cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGBA))
 
-            if use_custom_size and output_width > 0 and output_height > 0:
-                pil_img = resize_image(pil_img, output_width, output_height)
+                if use_custom_size and output_width > 0 and output_height > 0:
+                    pil_img = resize_image(pil_img, output_width, output_height)
 
-            processed_pil_images.append(pil_img)
-            extracted_count += 1
+                processed_pil_images.append(pil_img)
+                extracted_count += 1
 
         frame_idx += 1
         if extracted_count >= max_frames:
@@ -194,6 +202,14 @@ def process_video_to_sprites(video_path, bg_color_rgb, tolerance, edge_smoothing
 
     cap.release()
     return processed_pil_images, total_frames
+
+# --- 이미지에서 색상 추출 (스포이드) ---
+def get_color_at_position(image_rgb, x, y):
+    """이미지의 특정 좌표에서 RGB 색상 추출"""
+    if 0 <= x < image_rgb.shape[1] and 0 <= y < image_rgb.shape[0]:
+        r, g, b = image_rgb[int(y), int(x)]
+        return f"#{r:02x}{g:02x}{b:02x}"
+    return "#000000"
 
 # --- 체크무늬 배경 생성 ---
 def create_checker_background(width, height, checker_size=10):
@@ -223,6 +239,10 @@ if 'processed_images' not in st.session_state:
     st.session_state.processed_images = []
 if 'logo_regions' not in st.session_state:
     st.session_state.logo_regions = []
+if 'picked_color' not in st.session_state:
+    st.session_state.picked_color = "#000000"
+if 'loop_animation' not in st.session_state:
+    st.session_state.loop_animation = False
 
 # ===== 사이드바: 모드 선택 =====
 with st.sidebar:
@@ -302,9 +322,11 @@ REPLICATE_API_TOKEN = "your_token_here"
                     index=1
                 )
             with col2:
-                motion_bucket_id = st.slider("모션 강도", 1, 255, 127, help="높을수록 움직임 큼")
+                motion_bucket_id = st.slider("모션 강도", 1, 255, 100, help="높을수록 움직임 큼")
             with col3:
                 ai_fps = st.slider("FPS", 1, 30, 6)
+
+            st.caption("⚠️ 모션 강도가 높으면 시작/끝 프레임이 불안정할 수 있습니다. AI 모델 특성상 처음과 마지막 몇 프레임은 왜곡될 수 있으니, 출력 설정에서 프레임 트리밍을 사용하세요.")
 
         # 이미 생성된 비디오가 있는지 확인
         if st.session_state.generated_video_path and os.path.exists(st.session_state.generated_video_path):
@@ -374,9 +396,73 @@ REPLICATE_API_TOKEN = "your_token_here"
 
             # 배경 제거 옵션
             with st.expander("🎨 배경 제거 옵션", expanded=True):
+                st.markdown("#### 🎯 배경색 선택")
+                st.caption("스포이드를 사용하여 이미지에서 직접 배경색을 선택하거나, 아래 색상 피커를 사용하세요.")
+
+                # 스포이드 도구 UI
+                eyedropper_col1, eyedropper_col2 = st.columns([2, 1])
+
+                with eyedropper_col1:
+                    # 이미지 크기 계산 (캔버스용)
+                    max_canvas_width = 400
+                    scale = max_canvas_width / video_width if video_width > max_canvas_width else 1.0
+                    canvas_width = int(video_width * scale)
+                    canvas_height = int(video_height * scale)
+
+                    # 캔버스에 표시할 이미지 리사이즈
+                    frame_pil = Image.fromarray(first_frame_rgb)
+                    if scale < 1.0:
+                        frame_pil = frame_pil.resize((canvas_width, canvas_height), Image.Resampling.LANCZOS)
+
+                    st.markdown("**🔍 스포이드: 이미지를 클릭하여 색상 선택**")
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255, 0, 0, 0.3)",
+                        stroke_width=1,
+                        stroke_color="#FF0000",
+                        background_image=frame_pil,
+                        height=canvas_height,
+                        width=canvas_width,
+                        drawing_mode="point",
+                        point_display_radius=3,
+                        key="eyedropper_canvas_ai",
+                    )
+
+                    # 스포이드로 색상 선택 처리
+                    if canvas_result.json_data is not None:
+                        objects = canvas_result.json_data.get("objects", [])
+                        if objects:
+                            # 가장 최근 클릭 위치에서 색상 추출
+                            latest_obj = objects[-1]
+                            if latest_obj.get("type") == "circle":
+                                cx = int(latest_obj.get("left", 0) / scale)
+                                cy = int(latest_obj.get("top", 0) / scale)
+                                picked = get_color_at_position(first_frame_rgb, cx, cy)
+                                if picked != st.session_state.picked_color:
+                                    st.session_state.picked_color = picked
+                                    st.rerun()
+
+                with eyedropper_col2:
+                    st.markdown("**선택된 색상**")
+                    st.markdown(f"""
+                    <div style="
+                        width: 80px;
+                        height: 80px;
+                        background-color: {st.session_state.picked_color};
+                        border: 2px solid #333;
+                        border-radius: 8px;
+                        margin: 10px 0;
+                    "></div>
+                    """, unsafe_allow_html=True)
+                    st.code(st.session_state.picked_color)
+
+                    if st.button("🔄 스포이드 초기화", key="reset_eyedropper_ai"):
+                        st.session_state.picked_color = "#000000"
+                        st.rerun()
+
+                st.markdown("---")
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    bg_color_hex = st.color_picker("제거할 배경색", "#000000")
+                    bg_color_hex = st.color_picker("제거할 배경색", st.session_state.picked_color, key="bg_color_ai")
                 with col2:
                     tolerance = st.slider("민감도", 0, 150, 100)
                 with col3:
@@ -384,6 +470,18 @@ REPLICATE_API_TOKEN = "your_token_here"
 
             # 출력 설정
             with st.expander("📐 출력 설정", expanded=False):
+                # 프레임 트리밍 옵션 (AI 생성 모드에서 기본 활성화)
+                st.markdown("#### ✂️ 프레임 트리밍")
+                st.caption("AI 생성 비디오의 시작/끝 불안정한 프레임을 자동으로 제거합니다.")
+                trim_col1, trim_col2 = st.columns(2)
+                with trim_col1:
+                    skip_start_frames = st.number_input("시작 프레임 제거", 0, 10, 2, key="skip_start_ai",
+                                                        help="비디오 시작 부분에서 건너뛸 프레임 수")
+                with trim_col2:
+                    skip_end_frames = st.number_input("끝 프레임 제거", 0, 10, 2, key="skip_end_ai",
+                                                      help="비디오 끝 부분에서 건너뛸 프레임 수")
+
+                st.markdown("---")
                 col1, col2 = st.columns(2)
                 with col1:
                     use_custom_size = st.checkbox("크기 직접 지정")
@@ -395,9 +493,18 @@ REPLICATE_API_TOKEN = "your_token_here"
 
                 with col2:
                     frame_interval = st.number_input("프레임 추출 간격", 1, 30, 1)
-                    max_frames = st.number_input("최대 프레임", 1, total_frames, min(total_frames, 100))
+                    # 트리밍 후 사용 가능한 프레임 수 계산
+                    available_frames = max(1, total_frames - skip_start_frames - skip_end_frames)
+                    max_frames = st.number_input("최대 프레임", 1, available_frames, min(available_frames, 100))
 
                 gif_speed = st.slider("GIF 속도 (ms/프레임)", 10, 500, 100)
+
+                # 루프 애니메이션 옵션
+                st.markdown("---")
+                st.markdown("#### 🔄 루프 애니메이션")
+                loop_animation = st.checkbox("루프 모드 (순방향+역방향)", value=False, key="loop_ai",
+                                            help="GIF 생성 시 프레임을 순방향+역방향으로 이어붙여 자연스러운 루프 생성 (예: 1,2,3,4,5 → 1,2,3,4,5,4,3,2)")
+                st.session_state.loop_animation = loop_animation
 
             # 미리보기
             st.markdown("### 👁️ 미리보기")
@@ -422,7 +529,8 @@ REPLICATE_API_TOKEN = "your_token_here"
                         st.session_state.generated_video_path,
                         bg_color_rgb, tolerance, edge_smoothing,
                         frame_interval, max_frames, use_custom_size,
-                        output_width, output_height, st.session_state.logo_regions
+                        output_width, output_height, st.session_state.logo_regions,
+                        skip_start_frames, skip_end_frames
                     )
                     st.session_state.processed_images = processed_images
                     st.session_state.gif_speed = gif_speed
@@ -478,15 +586,90 @@ else:
             first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
 
             with st.expander("🎨 배경 제거 옵션", expanded=True):
+                st.markdown("#### 🎯 배경색 선택")
+                st.caption("스포이드를 사용하여 이미지에서 직접 배경색을 선택하거나, 아래 색상 피커를 사용하세요.")
+
+                # 스포이드 도구 UI
+                eyedropper_col1, eyedropper_col2 = st.columns([2, 1])
+
+                with eyedropper_col1:
+                    # 이미지 크기 계산 (캔버스용)
+                    max_canvas_width = 400
+                    scale_video = max_canvas_width / video_width if video_width > max_canvas_width else 1.0
+                    canvas_width_v = int(video_width * scale_video)
+                    canvas_height_v = int(video_height * scale_video)
+
+                    # 캔버스에 표시할 이미지 리사이즈
+                    frame_pil_v = Image.fromarray(first_frame_rgb)
+                    if scale_video < 1.0:
+                        frame_pil_v = frame_pil_v.resize((canvas_width_v, canvas_height_v), Image.Resampling.LANCZOS)
+
+                    st.markdown("**🔍 스포이드: 이미지를 클릭하여 색상 선택**")
+                    canvas_result_v = st_canvas(
+                        fill_color="rgba(255, 0, 0, 0.3)",
+                        stroke_width=1,
+                        stroke_color="#FF0000",
+                        background_image=frame_pil_v,
+                        height=canvas_height_v,
+                        width=canvas_width_v,
+                        drawing_mode="point",
+                        point_display_radius=3,
+                        key="eyedropper_canvas_video",
+                    )
+
+                    # 스포이드로 색상 선택 처리
+                    if canvas_result_v.json_data is not None:
+                        objects_v = canvas_result_v.json_data.get("objects", [])
+                        if objects_v:
+                            latest_obj_v = objects_v[-1]
+                            if latest_obj_v.get("type") == "circle":
+                                cx_v = int(latest_obj_v.get("left", 0) / scale_video)
+                                cy_v = int(latest_obj_v.get("top", 0) / scale_video)
+                                picked_v = get_color_at_position(first_frame_rgb, cx_v, cy_v)
+                                if picked_v != st.session_state.picked_color:
+                                    st.session_state.picked_color = picked_v
+                                    st.rerun()
+
+                with eyedropper_col2:
+                    st.markdown("**선택된 색상**")
+                    st.markdown(f"""
+                    <div style="
+                        width: 80px;
+                        height: 80px;
+                        background-color: {st.session_state.picked_color};
+                        border: 2px solid #333;
+                        border-radius: 8px;
+                        margin: 10px 0;
+                    "></div>
+                    """, unsafe_allow_html=True)
+                    st.code(st.session_state.picked_color)
+
+                    if st.button("🔄 스포이드 초기화", key="reset_eyedropper_video"):
+                        st.session_state.picked_color = "#000000"
+                        st.rerun()
+
+                st.markdown("---")
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    bg_color_hex = st.color_picker("제거할 배경색", "#000000", key="video_bg")
+                    bg_color_hex = st.color_picker("제거할 배경색", st.session_state.picked_color, key="video_bg")
                 with col2:
                     tolerance = st.slider("민감도", 0, 150, 100, key="video_tol")
                 with col3:
                     edge_smoothing = st.slider("경계선 부드럽게", 0, 10, 3, key="video_edge")
 
             with st.expander("📐 출력 설정", expanded=False):
+                # 프레임 트리밍 옵션 (비디오 수정 모드에서는 기본 비활성화)
+                st.markdown("#### ✂️ 프레임 트리밍")
+                st.caption("비디오의 시작/끝 프레임을 제거합니다.")
+                trim_col1_v, trim_col2_v = st.columns(2)
+                with trim_col1_v:
+                    skip_start_frames_v = st.number_input("시작 프레임 제거", 0, 10, 0, key="skip_start_video",
+                                                          help="비디오 시작 부분에서 건너뛸 프레임 수")
+                with trim_col2_v:
+                    skip_end_frames_v = st.number_input("끝 프레임 제거", 0, 10, 0, key="skip_end_video",
+                                                        help="비디오 끝 부분에서 건너뛸 프레임 수")
+
+                st.markdown("---")
                 col1, col2 = st.columns(2)
                 with col1:
                     use_custom_size = st.checkbox("크기 직접 지정", key="video_custom")
@@ -497,9 +680,17 @@ else:
                         output_width, output_height = video_width, video_height
                 with col2:
                     frame_interval = st.number_input("추출 간격", 1, 30, 1, key="video_int")
-                    max_frames = st.number_input("최대 프레임", 1, total_frames, min(total_frames, 100), key="video_max")
+                    available_frames_v = max(1, total_frames - skip_start_frames_v - skip_end_frames_v)
+                    max_frames = st.number_input("최대 프레임", 1, available_frames_v, min(available_frames_v, 100), key="video_max")
 
                 gif_speed = st.slider("GIF 속도", 10, 500, 100, key="video_gif")
+
+                # 루프 애니메이션 옵션
+                st.markdown("---")
+                st.markdown("#### 🔄 루프 애니메이션")
+                loop_animation_v = st.checkbox("루프 모드 (순방향+역방향)", value=False, key="loop_video",
+                                              help="GIF 생성 시 프레임을 순방향+역방향으로 이어붙여 자연스러운 루프 생성")
+                st.session_state.loop_animation = loop_animation_v
 
             # 미리보기
             st.markdown("### 👁️ 미리보기")
@@ -522,7 +713,8 @@ else:
                         st.session_state.generated_video_path,
                         bg_color_rgb, tolerance, edge_smoothing,
                         frame_interval, max_frames, use_custom_size,
-                        output_width, output_height, []
+                        output_width, output_height, [],
+                        skip_start_frames_v, skip_end_frames_v
                     )
                     st.session_state.processed_images = processed_images
                     st.session_state.gif_speed = gif_speed
@@ -540,14 +732,66 @@ if st.session_state.processed_images:
     tab1, tab2, tab3 = st.tabs(["🎬 GIF", "📄 스프라이트 시트", "🖼️ 프레임 선택"])
 
     with tab1:
+        # 루프 애니메이션 처리
+        gif_frames = processed_pil_images.copy()
+        if st.session_state.get('loop_animation', False) and len(gif_frames) > 2:
+            # 순방향 + 역방향 (첫 프레임과 마지막 프레임 제외하고 역순)
+            # 예: [1,2,3,4,5] → [1,2,3,4,5,4,3,2]
+            reversed_frames = gif_frames[-2:0:-1]  # 마지막 프레임 제외, 역순, 첫 프레임 제외
+            gif_frames = gif_frames + reversed_frames
+            st.info(f"🔄 루프 모드: {len(processed_pil_images)}프레임 → {len(gif_frames)}프레임 (순방향+역방향)")
+
+        # RGBA 이미지를 투명 배경 GIF로 올바르게 변환
         gif_buffer = io.BytesIO()
-        processed_pil_images[0].save(
-            gif_buffer, format="GIF", save_all=True,
-            append_images=processed_pil_images[1:],
-            duration=current_gif_speed, loop=0, disposal=2, transparency=0
-        )
+        # 첫 프레임을 P 모드(팔레트)로 변환하고 투명 색상 인덱스 설정
+        converted_frames = []
+        for frame in gif_frames:
+            # RGBA에서 투명 영역을 특정 색상으로 표시
+            if frame.mode == 'RGBA':
+                # 투명 영역을 마젠타(255, 0, 255)로 채움 (투명 마커)
+                background = Image.new('RGBA', frame.size, (255, 0, 255, 255))
+                # 알파 채널을 사용하여 합성
+                composite = Image.alpha_composite(background, frame)
+                # P 모드로 변환하고 마젠타를 투명으로 설정
+                p_frame = composite.convert('RGB').convert('P', palette=Image.ADAPTIVE, colors=255)
+                # 투명 색상 인덱스 찾기
+                palette = p_frame.getpalette()
+                trans_index = 0
+                for i in range(256):
+                    if palette[i*3:i*3+3] == [255, 0, 255]:
+                        trans_index = i
+                        break
+                converted_frames.append((p_frame, trans_index))
+            else:
+                converted_frames.append((frame.convert('P', palette=Image.ADAPTIVE, colors=256), None))
+
+        if converted_frames:
+            first_frame, first_trans = converted_frames[0]
+            append_frames = [f[0] for f in converted_frames[1:]]
+
+            first_frame.save(
+                gif_buffer, format="GIF", save_all=True,
+                append_images=append_frames,
+                duration=current_gif_speed, loop=0, disposal=2,
+                transparency=first_trans if first_trans is not None else 0
+            )
+
         st.image(gif_buffer.getvalue(), caption="투명 배경 GIF")
-        st.download_button("🎬 GIF 다운로드", gif_buffer.getvalue(), "animation.gif", "image/gif", width="stretch")
+
+        # APNG도 생성 (완벽한 투명도 지원)
+        apng_buffer = io.BytesIO()
+        gif_frames[0].save(
+            apng_buffer, format="PNG", save_all=True,
+            append_images=gif_frames[1:],
+            duration=current_gif_speed, loop=0
+        )
+
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button("🎬 GIF 다운로드", gif_buffer.getvalue(), "animation.gif", "image/gif", width="stretch")
+        with dl_col2:
+            st.download_button("🖼️ APNG 다운로드 (권장)", apng_buffer.getvalue(), "animation.png", "image/png", width="stretch",
+                              help="APNG는 완벽한 투명도를 지원합니다. GIF보다 화질이 좋습니다.")
 
     with tab2:
         sheet_cols = st.number_input("열 수 (0=가로 한 줄)", 0, len(processed_pil_images), 0)
