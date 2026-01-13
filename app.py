@@ -228,35 +228,9 @@ with st.sidebar:
     st.subheader("📌 작업 모드")
     app_mode = st.radio(
         "모드 선택",
-        ["📹 비디오 업로드", "🤖 AI 생성 (이미지→비디오)"],
+        ["🤖 AI 생성 (이미지→비디오)", "📹 비디오 수정"],
         key="app_mode"
     )
-
-    # API 토큰 상태 표시
-    if "AI 생성" in app_mode:
-        st.markdown("---")
-        st.subheader("🔑 API 상태")
-        if REPLICATE_API_TOKEN:
-            st.success("✅ API 토큰 로드됨")
-        else:
-            st.error("❌ API 토큰 없음")
-            st.caption("Streamlit Cloud: Secrets에 설정")
-            st.caption("로컬: `.env` 파일에 설정")
-
-    st.markdown("---")
-    st.caption("📋 현재 단계")
-    if "AI 생성" in app_mode:
-        steps = ["1️⃣ 이미지 업로드", "2️⃣ AI 비디오 생성", "3️⃣ 배경 설정", "4️⃣ 결과물"]
-    else:
-        steps = ["1️⃣ 비디오 업로드", "2️⃣ 배경 설정", "3️⃣ 결과물"]
-
-    for i, step in enumerate(steps, 1):
-        if i < st.session_state.current_step:
-            st.write(f"✅ {step}")
-        elif i == st.session_state.current_step:
-            st.write(f"👉 **{step}**")
-        else:
-            st.write(f"⬜ {step}")
 
 # ===== AI 생성 모드 =====
 if "AI 생성" in app_mode:
@@ -448,10 +422,10 @@ REPLICATE_API_TOKEN = "your_token_here"
                     st.session_state.current_step = 4
                     st.rerun()
 
-# ===== 비디오 업로드 모드 =====
+# ===== 비디오 수정 모드 =====
 else:
-    # ========== STEP 1: 비디오 업로드 ==========
-    st.subheader("📤 Step 1: 비디오 업로드")
+    # ========== STEP 1: 비디오 수정 ==========
+    st.subheader("📤 Step 1: 비디오 수정")
 
     uploaded_video = st.file_uploader(
         "비디오 파일 (MP4/MOV/AVI)",
