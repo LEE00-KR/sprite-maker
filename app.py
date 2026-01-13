@@ -13,21 +13,34 @@ from dotenv import load_dotenv
 # .env 파일 로드 (로컬 개발용)
 load_dotenv()
 
-# Replicate API 토큰 (Streamlit Cloud secrets 우선, 없으면 .env)
-def get_api_token():
-    """Streamlit Cloud의 st.secrets 또는 .env에서 API 토큰 로드"""
-    # Streamlit Cloud secrets 확인
+# Replicate API 토큰 설정 (Streamlit Cloud secrets 우선, 없으면 .env)
+def setup_api_token():
+    """
+    API 토큰을 로드하고 os.environ에 설정
+    replicate 라이브러리가 os.environ에서 토큰을 읽기 때문에 필수
+    """
+    token = ""
+
+    # 1. Streamlit Cloud secrets 확인
     try:
-        if "REPLICATE_API_TOKEN" in st.secrets:
-            return st.secrets["REPLICATE_API_TOKEN"]
+        if hasattr(st, 'secrets') and "REPLICATE_API_TOKEN" in st.secrets:
+            token = st.secrets["REPLICATE_API_TOKEN"]
     except Exception:
         pass
-    # 로컬 .env 파일 확인
-    return os.getenv("REPLICATE_API_TOKEN", "")
 
-REPLICATE_API_TOKEN = get_api_token()
+    # 2. 로컬 .env 파일 확인
+    if not token:
+        token = os.getenv("REPLICATE_API_TOKEN", "")
 
-# Replicate import (토큰이 있을 때만)
+    # 3. os.environ에 설정 (replicate 라이브러리용)
+    if token:
+        os.environ["REPLICATE_API_TOKEN"] = token
+
+    return token
+
+REPLICATE_API_TOKEN = setup_api_token()
+
+# Replicate import
 try:
     import replicate
     REPLICATE_AVAILABLE = True
@@ -265,18 +278,24 @@ if "AI 생성" in app_mode:
         st.subheader("🤖 Step 2: AI 비디오 생성")
 
         if not REPLICATE_API_TOKEN:
-            st.error("❌ Replicate API 토큰이 설정되지 않았습니다.")
-            st.markdown("""
+            st.warning("⚠️ Replicate API 토큰이 설정되지 않았습니다.")
+            with st.expander("🔑 API 토큰 설정 방법", expanded=True):
+                st.markdown("""
 **Streamlit Cloud 배포:**
-1. 앱 대시보드 → Settings → Secrets
-2. 아래 내용 추가:
+1. 앱 우측 상단 메뉴 → Settings → Secrets
+2. 아래 내용을 입력 후 Save:
 ```toml
 REPLICATE_API_TOKEN = "your_token_here"
 ```
+3. 앱을 **Reboot** 해주세요
 
 **로컬 실행:**
-- `.env` 파일에 `REPLICATE_API_TOKEN=your_token` 추가
-            """)
+- 프로젝트 폴더에 `.env` 파일 생성
+- `REPLICATE_API_TOKEN=your_token` 추가
+
+🔗 [Replicate API 토큰 발급](https://replicate.com/account/api-tokens)
+                """)
+            st.info("💡 API 토큰 없이 사용하려면 사이드바에서 '비디오 수정' 모드를 선택하세요.")
             st.stop()
 
         # AI 생성 옵션
