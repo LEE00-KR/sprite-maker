@@ -10,11 +10,22 @@ import requests
 import base64
 from dotenv import load_dotenv
 
-# .env 파일 로드
+# .env 파일 로드 (로컬 개발용)
 load_dotenv()
 
-# Replicate API 토큰 (환경변수에서 로드)
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
+# Replicate API 토큰 (Streamlit Cloud secrets 우선, 없으면 .env)
+def get_api_token():
+    """Streamlit Cloud의 st.secrets 또는 .env에서 API 토큰 로드"""
+    # Streamlit Cloud secrets 확인
+    try:
+        if "REPLICATE_API_TOKEN" in st.secrets:
+            return st.secrets["REPLICATE_API_TOKEN"]
+    except Exception:
+        pass
+    # 로컬 .env 파일 확인
+    return os.getenv("REPLICATE_API_TOKEN", "")
+
+REPLICATE_API_TOKEN = get_api_token()
 
 # Replicate import (토큰이 있을 때만)
 try:
@@ -217,34 +228,9 @@ with st.sidebar:
     st.subheader("📌 작업 모드")
     app_mode = st.radio(
         "모드 선택",
-        ["📹 비디오 업로드", "🤖 AI 생성 (이미지→비디오)"],
+        ["🤖 AI 생성 (이미지→비디오)", "📹 비디오 수정"],
         key="app_mode"
     )
-
-    # API 토큰 상태 표시
-    if "AI 생성" in app_mode:
-        st.markdown("---")
-        st.subheader("🔑 API 상태")
-        if REPLICATE_API_TOKEN:
-            st.success("✅ API 토큰 로드됨 (.env)")
-        else:
-            st.error("❌ API 토큰 없음")
-            st.caption("`.env` 파일에 `REPLICATE_API_TOKEN` 설정 필요")
-
-    st.markdown("---")
-    st.caption("📋 현재 단계")
-    if "AI 생성" in app_mode:
-        steps = ["1️⃣ 이미지 업로드", "2️⃣ AI 비디오 생성", "3️⃣ 배경 설정", "4️⃣ 결과물"]
-    else:
-        steps = ["1️⃣ 비디오 업로드", "2️⃣ 배경 설정", "3️⃣ 결과물"]
-
-    for i, step in enumerate(steps, 1):
-        if i < st.session_state.current_step:
-            st.write(f"✅ {step}")
-        elif i == st.session_state.current_step:
-            st.write(f"👉 **{step}**")
-        else:
-            st.write(f"⬜ {step}")
 
 # ===== AI 생성 모드 =====
 if "AI 생성" in app_mode:
@@ -264,7 +250,7 @@ if "AI 생성" in app_mode:
 
         col1, col2 = st.columns([1, 2])
         with col1:
-            st.image(image, caption=f"업로드된 이미지 ({image.width}x{image.height})", use_container_width=True)
+            st.image(image, caption=f"업로드된 이미지 ({image.width}x{image.height})", width="stretch")
 
         with col2:
             st.success("✅ 이미지 업로드 완료!")
@@ -280,7 +266,17 @@ if "AI 생성" in app_mode:
 
         if not REPLICATE_API_TOKEN:
             st.error("❌ Replicate API 토큰이 설정되지 않았습니다.")
-            st.code("# .env 파일에 추가:\nREPLICATE_API_TOKEN=your_token_here", language="bash")
+            st.markdown("""
+**Streamlit Cloud 배포:**
+1. 앱 대시보드 → Settings → Secrets
+2. 아래 내용 추가:
+```toml
+REPLICATE_API_TOKEN = "your_token_here"
+```
+
+**로컬 실행:**
+- `.env` 파일에 `REPLICATE_API_TOKEN=your_token` 추가
+            """)
             st.stop()
 
         # AI 생성 옵션
@@ -310,17 +306,17 @@ if "AI 생성" in app_mode:
 
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("🔄 다시 생성하기", use_container_width=True):
+                if st.button("🔄 다시 생성하기", width="stretch"):
                     st.session_state.generated_video_path = None
                     st.session_state.current_step = 2
                     st.rerun()
             with col2:
-                if st.button("➡️ 다음 단계로", type="primary", use_container_width=True):
+                if st.button("➡️ 다음 단계로", type="primary", width="stretch"):
                     st.session_state.current_step = 3
                     st.rerun()
         else:
             # AI 생성 버튼
-            if st.button("🚀 AI 비디오 생성 시작", type="primary", use_container_width=True):
+            if st.button("🚀 AI 비디오 생성 시작", type="primary", width="stretch"):
                 with st.status("🤖 AI 비디오 생성 중...", expanded=True) as status:
                     st.write("⏳ Stable Video Diffusion 실행 중...")
                     st.write("   약 2~5분 소요됩니다.")
@@ -403,17 +399,17 @@ if "AI 생성" in app_mode:
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**원본**")
-                st.image(first_frame_rgb, use_container_width=True)
+                st.image(first_frame_rgb, width="stretch")
             with col2:
                 st.markdown("**배경 제거 적용**")
                 preview = process_single_frame(first_frame_rgb, bg_color_rgb, tolerance, edge_smoothing)
                 checker = create_checker_background(preview.width, preview.height)
                 checker.paste(preview, (0, 0), preview)
-                st.image(checker, use_container_width=True)
+                st.image(checker, width="stretch")
                 st.caption("🔲 체크무늬 = 투명 영역")
 
             # 스프라이트 변환 버튼
-            if st.button("✨ 스프라이트 시트 생성", type="primary", use_container_width=True):
+            if st.button("✨ 스프라이트 시트 생성", type="primary", width="stretch"):
                 with st.spinner("변환 중..."):
                     processed_images, _ = process_video_to_sprites(
                         st.session_state.generated_video_path,
@@ -426,10 +422,10 @@ if "AI 생성" in app_mode:
                     st.session_state.current_step = 4
                     st.rerun()
 
-# ===== 비디오 업로드 모드 =====
+# ===== 비디오 수정 모드 =====
 else:
-    # ========== STEP 1: 비디오 업로드 ==========
-    st.subheader("📤 Step 1: 비디오 업로드")
+    # ========== STEP 1: 비디오 수정 ==========
+    st.subheader("📤 Step 1: 비디오 수정")
 
     uploaded_video = st.file_uploader(
         "비디오 파일 (MP4/MOV/AVI)",
@@ -455,7 +451,7 @@ else:
 
         if ret:
             first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-            st.image(first_frame_rgb, caption="첫 프레임", use_container_width=True)
+            st.image(first_frame_rgb, caption="첫 프레임", width="stretch")
 
         st.session_state.current_step = 2
 
@@ -505,15 +501,15 @@ else:
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**원본**")
-                st.image(first_frame_rgb, use_container_width=True)
+                st.image(first_frame_rgb, width="stretch")
             with col2:
                 st.markdown("**배경 제거 적용**")
                 preview = process_single_frame(first_frame_rgb, bg_color_rgb, tolerance, edge_smoothing)
                 checker = create_checker_background(preview.width, preview.height)
                 checker.paste(preview, (0, 0), preview)
-                st.image(checker, use_container_width=True)
+                st.image(checker, width="stretch")
 
-            if st.button("✨ 스프라이트 시트 생성", type="primary", use_container_width=True, key="video_convert"):
+            if st.button("✨ 스프라이트 시트 생성", type="primary", width="stretch", key="video_convert"):
                 with st.spinner("변환 중..."):
                     processed_images, _ = process_video_to_sprites(
                         st.session_state.generated_video_path,
@@ -544,7 +540,7 @@ if st.session_state.processed_images:
             duration=current_gif_speed, loop=0, disposal=2, transparency=0
         )
         st.image(gif_buffer.getvalue(), caption="투명 배경 GIF")
-        st.download_button("🎬 GIF 다운로드", gif_buffer.getvalue(), "animation.gif", "image/gif", use_container_width=True)
+        st.download_button("🎬 GIF 다운로드", gif_buffer.getvalue(), "animation.gif", "image/gif", width="stretch")
 
     with tab2:
         sheet_cols = st.number_input("열 수 (0=가로 한 줄)", 0, len(processed_pil_images), 0)
@@ -555,7 +551,7 @@ if st.session_state.processed_images:
 
         col1, col2 = st.columns(2)
         with col1:
-            st.download_button("📄 PNG 저장", sheet_buffer.getvalue(), "sprite_sheet.png", "image/png", use_container_width=True)
+            st.download_button("📄 PNG 저장", sheet_buffer.getvalue(), "sprite_sheet.png", "image/png", width="stretch")
         with col2:
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w") as zf:
@@ -563,7 +559,7 @@ if st.session_state.processed_images:
                     img_arr = io.BytesIO()
                     img.save(img_arr, format="PNG")
                     zf.writestr(f"frame_{idx:03d}.png", img_arr.getvalue())
-            st.download_button("📦 ZIP 저장", zip_buffer.getvalue(), "frames.zip", "application/zip", use_container_width=True)
+            st.download_button("📦 ZIP 저장", zip_buffer.getvalue(), "frames.zip", "application/zip", width="stretch")
 
     with tab3:
         if 'selected_frames' not in st.session_state:
@@ -571,11 +567,11 @@ if st.session_state.processed_images:
 
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("✅ 전체 선택", use_container_width=True):
+            if st.button("✅ 전체 선택", width="stretch"):
                 st.session_state.selected_frames = list(range(len(processed_pil_images)))
                 st.rerun()
         with col2:
-            if st.button("❌ 전체 해제", use_container_width=True):
+            if st.button("❌ 전체 해제", width="stretch"):
                 st.session_state.selected_frames = []
                 st.rerun()
 
@@ -603,11 +599,11 @@ if st.session_state.processed_images:
             custom_buf = io.BytesIO()
             custom_sheet.save(custom_buf, format="PNG")
             st.image(custom_sheet)
-            st.download_button("📄 선택 프레임 저장", custom_buf.getvalue(), "custom_sheet.png", "image/png", use_container_width=True)
+            st.download_button("📄 선택 프레임 저장", custom_buf.getvalue(), "custom_sheet.png", "image/png", width="stretch")
 
     # 처음부터 다시하기
     st.markdown("---")
-    if st.button("🔄 처음부터 다시하기", use_container_width=True):
+    if st.button("🔄 처음부터 다시하기", width="stretch"):
         st.session_state.current_step = 1
         st.session_state.uploaded_image = None
         st.session_state.generated_video_path = None
