@@ -2,3 +2,6 @@ streamlit
 opencv-python-headless
 numpy
 Pillow
+streamlit-drawable-canvas
+replicate
+requests
