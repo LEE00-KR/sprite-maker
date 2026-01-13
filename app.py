@@ -206,6 +206,33 @@ def create_checker_background(width, height, checker_size=10):
                     checker.putpixel((x, y), color)
     return checker
 
+# --- 이미지에서 색상 추출 (스포이드) ---
+def get_color_at_position(image_rgb, x, y):
+    """이미지의 특정 좌표에서 RGB 색상 추출"""
+    if 0 <= x < image_rgb.shape[1] and 0 <= y < image_rgb.shape[0]:
+        r, g, b = image_rgb[int(y), int(x)]
+        return f"#{r:02x}{g:02x}{b:02x}"
+    return "#000000"
+
+# --- 이미지에서 주요 색상 추출 ---
+def extract_dominant_colors(image_rgb, n_colors=5):
+    """이미지 가장자리에서 주요 배경색 후보 추출"""
+    h, w = image_rgb.shape[:2]
+    # 가장자리 픽셀 수집 (상하좌우 10픽셀)
+    edge_size = min(10, h // 4, w // 4)
+    edges = []
+    edges.extend(image_rgb[:edge_size, :].reshape(-1, 3).tolist())  # 상단
+    edges.extend(image_rgb[-edge_size:, :].reshape(-1, 3).tolist())  # 하단
+    edges.extend(image_rgb[:, :edge_size].reshape(-1, 3).tolist())  # 좌측
+    edges.extend(image_rgb[:, -edge_size:].reshape(-1, 3).tolist())  # 우측
+
+    # 색상 빈도 계산
+    from collections import Counter
+    color_counts = Counter([tuple(c) for c in edges])
+    most_common = color_counts.most_common(n_colors)
+
+    return [f"#{r:02x}{g:02x}{b:02x}" for (r, g, b), _ in most_common]
+
 # ===== UI 설정 =====
 st.set_page_config(page_title="Sprite Maker + AI", layout="wide")
 st.header("🦖 스프라이트 생성기")
@@ -223,6 +250,8 @@ if 'processed_images' not in st.session_state:
     st.session_state.processed_images = []
 if 'logo_regions' not in st.session_state:
     st.session_state.logo_regions = []
+if 'picked_color' not in st.session_state:
+    st.session_state.picked_color = "#000000"
 
 # ===== 사이드바: 모드 선택 =====
 with st.sidebar:
@@ -374,9 +403,42 @@ REPLICATE_API_TOKEN = "your_token_here"
 
             # 배경 제거 옵션
             with st.expander("🎨 배경 제거 옵션", expanded=True):
+                st.markdown("#### 🎯 배경색 선택")
+
+                # 자동 추출된 배경색 후보
+                dominant_colors = extract_dominant_colors(first_frame_rgb, 5)
+                st.caption("📌 추천 배경색 (이미지 가장자리에서 자동 감지)")
+                color_cols = st.columns(len(dominant_colors))
+                for i, color in enumerate(dominant_colors):
+                    with color_cols[i]:
+                        if st.button(f"■", key=f"color_btn_ai_{i}", help=color):
+                            st.session_state.picked_color = color
+                            st.rerun()
+                        st.markdown(f"<div style='width:100%;height:20px;background:{color};border:1px solid #333;border-radius:3px;'></div>", unsafe_allow_html=True)
+
+                st.markdown("---")
+
+                # 스포이드: 좌표로 색상 추출
+                st.caption("🔍 스포이드: 좌표를 입력하여 색상 추출")
+                sp_col1, sp_col2, sp_col3 = st.columns([1, 1, 1])
+                with sp_col1:
+                    pick_x = st.number_input("X 좌표", 0, video_width - 1, 0, key="pick_x_ai")
+                with sp_col2:
+                    pick_y = st.number_input("Y 좌표", 0, video_height - 1, 0, key="pick_y_ai")
+                with sp_col3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("🎨 색상 추출", key="pick_color_ai"):
+                        picked = get_color_at_position(first_frame_rgb, pick_x, pick_y)
+                        st.session_state.picked_color = picked
+                        st.rerun()
+
+                st.markdown(f"**선택된 색상:** `{st.session_state.picked_color}`")
+                st.markdown(f"<div style='width:60px;height:30px;background:{st.session_state.picked_color};border:2px solid #333;border-radius:5px;display:inline-block;'></div>", unsafe_allow_html=True)
+
+                st.markdown("---")
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    bg_color_hex = st.color_picker("제거할 배경색", "#000000")
+                    bg_color_hex = st.color_picker("제거할 배경색", st.session_state.picked_color, key="bg_picker_ai")
                 with col2:
                     tolerance = st.slider("민감도", 0, 150, 100)
                 with col3:
@@ -478,9 +540,42 @@ else:
             first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
 
             with st.expander("🎨 배경 제거 옵션", expanded=True):
+                st.markdown("#### 🎯 배경색 선택")
+
+                # 자동 추출된 배경색 후보
+                dominant_colors_v = extract_dominant_colors(first_frame_rgb, 5)
+                st.caption("📌 추천 배경색 (이미지 가장자리에서 자동 감지)")
+                color_cols_v = st.columns(len(dominant_colors_v))
+                for i, color in enumerate(dominant_colors_v):
+                    with color_cols_v[i]:
+                        if st.button(f"■", key=f"color_btn_video_{i}", help=color):
+                            st.session_state.picked_color = color
+                            st.rerun()
+                        st.markdown(f"<div style='width:100%;height:20px;background:{color};border:1px solid #333;border-radius:3px;'></div>", unsafe_allow_html=True)
+
+                st.markdown("---")
+
+                # 스포이드: 좌표로 색상 추출
+                st.caption("🔍 스포이드: 좌표를 입력하여 색상 추출")
+                sp_col1_v, sp_col2_v, sp_col3_v = st.columns([1, 1, 1])
+                with sp_col1_v:
+                    pick_x_v = st.number_input("X 좌표", 0, video_width - 1, 0, key="pick_x_video")
+                with sp_col2_v:
+                    pick_y_v = st.number_input("Y 좌표", 0, video_height - 1, 0, key="pick_y_video")
+                with sp_col3_v:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("🎨 색상 추출", key="pick_color_video"):
+                        picked_v = get_color_at_position(first_frame_rgb, pick_x_v, pick_y_v)
+                        st.session_state.picked_color = picked_v
+                        st.rerun()
+
+                st.markdown(f"**선택된 색상:** `{st.session_state.picked_color}`")
+                st.markdown(f"<div style='width:60px;height:30px;background:{st.session_state.picked_color};border:2px solid #333;border-radius:5px;display:inline-block;'></div>", unsafe_allow_html=True)
+
+                st.markdown("---")
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    bg_color_hex = st.color_picker("제거할 배경색", "#000000", key="video_bg")
+                    bg_color_hex = st.color_picker("제거할 배경색", st.session_state.picked_color, key="video_bg")
                 with col2:
                     tolerance = st.slider("민감도", 0, 150, 100, key="video_tol")
                 with col3:
@@ -540,14 +635,52 @@ if st.session_state.processed_images:
     tab1, tab2, tab3 = st.tabs(["🎬 GIF", "📄 스프라이트 시트", "🖼️ 프레임 선택"])
 
     with tab1:
+        # RGBA 이미지를 투명 배경 GIF로 올바르게 변환
         gif_buffer = io.BytesIO()
-        processed_pil_images[0].save(
-            gif_buffer, format="GIF", save_all=True,
-            append_images=processed_pil_images[1:],
-            duration=current_gif_speed, loop=0, disposal=2, transparency=0
-        )
+        converted_frames = []
+        for frame in processed_pil_images:
+            if frame.mode == 'RGBA':
+                # 투명 영역을 마젠타(255, 0, 255)로 채움 (투명 마커)
+                background = Image.new('RGBA', frame.size, (255, 0, 255, 255))
+                composite = Image.alpha_composite(background, frame)
+                p_frame = composite.convert('RGB').convert('P', palette=Image.ADAPTIVE, colors=255)
+                # 투명 색상 인덱스 찾기
+                palette = p_frame.getpalette()
+                trans_index = 0
+                for i in range(256):
+                    if palette[i*3:i*3+3] == [255, 0, 255]:
+                        trans_index = i
+                        break
+                converted_frames.append((p_frame, trans_index))
+            else:
+                converted_frames.append((frame.convert('P', palette=Image.ADAPTIVE, colors=256), None))
+
+        if converted_frames:
+            first_frame, first_trans = converted_frames[0]
+            append_frames = [f[0] for f in converted_frames[1:]]
+            first_frame.save(
+                gif_buffer, format="GIF", save_all=True,
+                append_images=append_frames,
+                duration=current_gif_speed, loop=0, disposal=2,
+                transparency=first_trans if first_trans is not None else 0
+            )
+
         st.image(gif_buffer.getvalue(), caption="투명 배경 GIF")
-        st.download_button("🎬 GIF 다운로드", gif_buffer.getvalue(), "animation.gif", "image/gif", width="stretch")
+
+        # APNG도 생성 (완벽한 투명도 지원)
+        apng_buffer = io.BytesIO()
+        processed_pil_images[0].save(
+            apng_buffer, format="PNG", save_all=True,
+            append_images=processed_pil_images[1:],
+            duration=current_gif_speed, loop=0
+        )
+
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button("🎬 GIF 다운로드", gif_buffer.getvalue(), "animation.gif", "image/gif", width="stretch")
+        with dl_col2:
+            st.download_button("🖼️ APNG 다운로드 (권장)", apng_buffer.getvalue(), "animation.png", "image/png", width="stretch",
+                              help="APNG는 완벽한 투명도를 지원합니다.")
 
     with tab2:
         sheet_cols = st.number_input("열 수 (0=가로 한 줄)", 0, len(processed_pil_images), 0)
