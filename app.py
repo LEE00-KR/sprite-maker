@@ -10,35 +10,23 @@ import requests
 import base64
 from dotenv import load_dotenv
 
-# .env 파일 로드 (로컬 개발용)
+# ============================================
+# API 토큰 설정 (가장 먼저 실행되어야 함)
+# ============================================
+
+# 1. 로컬 .env 파일 로드
 load_dotenv()
 
-# Replicate API 토큰 설정 (Streamlit Cloud secrets 우선, 없으면 .env)
-def setup_api_token():
-    """
-    API 토큰을 로드하고 os.environ에 설정
-    replicate 라이브러리가 os.environ에서 토큰을 읽기 때문에 필수
-    """
-    token = ""
+# 2. Streamlit Cloud secrets에서 토큰 가져와서 os.environ에 강제 주입
+try:
+    if "REPLICATE_API_TOKEN" in st.secrets:
+        os.environ["REPLICATE_API_TOKEN"] = st.secrets["REPLICATE_API_TOKEN"]
+except FileNotFoundError:
+    # secrets.toml 파일이 없는 경우 (로컬 환경)
+    pass
 
-    # 1. Streamlit Cloud secrets 확인
-    try:
-        if hasattr(st, 'secrets') and "REPLICATE_API_TOKEN" in st.secrets:
-            token = st.secrets["REPLICATE_API_TOKEN"]
-    except Exception:
-        pass
-
-    # 2. 로컬 .env 파일 확인
-    if not token:
-        token = os.getenv("REPLICATE_API_TOKEN", "")
-
-    # 3. os.environ에 설정 (replicate 라이브러리용)
-    if token:
-        os.environ["REPLICATE_API_TOKEN"] = token
-
-    return token
-
-REPLICATE_API_TOKEN = setup_api_token()
+# 3. 최종 토큰 값 확인
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN", "")
 
 # Replicate import
 try:
