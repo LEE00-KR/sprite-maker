@@ -2,7 +2,7 @@ streamlit
 opencv-python-headless
 numpy
 Pillow
-streamlit-drawable-canvas
+streamlit-image-coordinates
 replicate
 requests
 python-dotenv
