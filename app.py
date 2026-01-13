@@ -19,7 +19,13 @@ except ImportError:
 # --- 배경 제거 함수 (에지 스무딩 포함) ---
 def remove_background(image, target_color, tolerance, edge_smoothing=0):
     """배경색을 제거하고 투명하게 만듦"""
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
+    elif len(image.shape) == 3 and image.shape[2] == 4:
+        pass  # 이미 BGRA
+    else:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
+
     lower_bound = np.array([max(c - tolerance, 0) for c in target_color])
     upper_bound = np.array([min(c + tolerance, 255) for c in target_color])
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
@@ -38,7 +44,7 @@ def remove_background(image, target_color, tolerance, edge_smoothing=0):
 # --- 로고/워터마크 영역 제거 함수 ---
 def remove_logo_area(image, regions):
     """지정된 영역을 투명하게 만듦"""
-    if image.shape[2] == 3:
+    if len(image.shape) == 3 and image.shape[2] == 3:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
     for region in regions:
         x, y, w, h = int(region['x']), int(region['y']), int(region['width']), int(region['height'])
@@ -91,16 +97,41 @@ def get_color_at_position(image_rgb, x, y):
         return f"#{r:02x}{g:02x}{b:02x}"
     return "#000000"
 
+# --- 단일 프레임 실시간 처리 (미리보기용) ---
+def process_single_frame(frame_rgb, bg_color_rgb, tolerance, edge_smoothing, logo_regions=None):
+    """단일 프레임에 배경 제거 적용 (미리보기용)"""
+    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+    if logo_regions:
+        frame_bgra = remove_logo_area(frame_bgr.copy(), logo_regions)
+        rgb_image = cv2.cvtColor(frame_bgra, cv2.COLOR_BGRA2RGB)
+        lower_bound = np.array([max(c - tolerance, 0) for c in bg_color_rgb])
+        upper_bound = np.array([min(c + tolerance, 255) for c in bg_color_rgb])
+        mask = cv2.inRange(rgb_image, lower_bound, upper_bound)
+        mask_inv = cv2.bitwise_not(mask)
+
+        if edge_smoothing > 0:
+            blur_size = edge_smoothing * 2 + 1
+            mask_inv = cv2.GaussianBlur(mask_inv, (blur_size, blur_size), 0)
+            kernel = np.ones((3, 3), np.uint8)
+            mask_inv = cv2.morphologyEx(mask_inv, cv2.MORPH_CLOSE, kernel)
+
+        frame_bgra[:, :, 3] = cv2.bitwise_and(frame_bgra[:, :, 3], mask_inv)
+        processed_cv = frame_bgra
+    else:
+        processed_cv = remove_background(frame_bgr, bg_color_rgb, tolerance, edge_smoothing)
+
+    processed_rgba = cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGBA)
+    return Image.fromarray(processed_rgba)
+
 # --- AI 비디오 생성 함수 ---
 def generate_video_from_image(image_file, api_token, video_length="25_frames_with_svd_xt", motion_bucket_id=127, fps=6):
     """Replicate API를 사용하여 이미지에서 비디오 생성"""
     os.environ["REPLICATE_API_TOKEN"] = api_token
 
-    # 이미지를 base64로 인코딩
     image_bytes = image_file.getvalue()
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-    # 이미지 MIME 타입 결정
     image_file.seek(0)
     header = image_file.read(8)
     image_file.seek(0)
@@ -114,7 +145,6 @@ def generate_video_from_image(image_file, api_token, video_length="25_frames_wit
 
     data_uri = f"data:{mime_type};base64,{base64_image}"
 
-    # Replicate API 호출
     output = replicate.run(
         "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd3af8d253968904295257f682fd7a95f9c",
         input={
@@ -168,7 +198,7 @@ def process_video_to_sprites(video_path, bg_color_rgb, tolerance, edge_smoothing
             processed_rgb = cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGBA)
             pil_img = Image.fromarray(processed_rgb)
 
-            if use_custom_size:
+            if use_custom_size and output_width > 0 and output_height > 0:
                 pil_img = resize_image(pil_img, output_width, output_height)
 
             processed_pil_images.append(pil_img)
@@ -214,35 +244,29 @@ with st.sidebar:
 
         st.markdown("---")
 
-        # AI 생성 설정
         st.subheader("🎬 AI 비디오 설정")
         video_length = st.selectbox(
             "비디오 길이",
             ["14_frames_with_svd", "25_frames_with_svd_xt"],
-            index=1,
-            help="프레임 수 선택"
+            index=1
         )
 
-        motion_bucket_id = st.slider(
-            "모션 강도",
-            1, 255, 127,
-            help="높을수록 움직임이 큼"
-        )
-
-        ai_fps = st.slider(
-            "AI 비디오 FPS",
-            1, 30, 6,
-            help="생성될 비디오의 FPS"
-        )
+        motion_bucket_id = st.slider("모션 강도", 1, 255, 127)
+        ai_fps = st.slider("AI 비디오 FPS", 1, 30, 6)
 
     st.markdown("---")
 
     # 공통 설정
-    st.subheader("⚙️ 변환 설정")
+    st.subheader("⚙️ 배경 제거 설정")
 
     bg_color_hex = st.color_picker("제거할 배경색", "#000000")
-    tolerance = st.slider("민감도", 0, 150, 100)
-    edge_smoothing = st.slider("경계선 부드럽게", 0, 10, 3)
+    tolerance = st.slider("민감도", 0, 150, 100, help="비슷한 색을 어디까지 제거할지")
+    edge_smoothing = st.slider("경계선 부드럽게", 0, 10, 3, help="높을수록 부드러운 경계")
+
+    # 실시간 미리보기 토글
+    st.markdown("---")
+    st.subheader("👁️ 미리보기")
+    enable_preview = st.checkbox("실시간 미리보기 활성화", value=True, help="설정 변경 시 즉시 적용")
 
     st.markdown("---")
 
@@ -279,6 +303,10 @@ if 'picked_color' not in st.session_state:
     st.session_state.picked_color = "#000000"
 if 'processed_images' not in st.session_state:
     st.session_state.processed_images = []
+if 'first_frame_rgb' not in st.session_state:
+    st.session_state.first_frame_rgb = None
+if 'video_path' not in st.session_state:
+    st.session_state.video_path = None
 
 bg_color_rgb = tuple(int(bg_color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
 
@@ -293,9 +321,11 @@ if "비디오 업로드" in app_mode:
     )
 
     if uploaded_file is not None:
+        # 임시 파일로 저장
         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         tfile.write(uploaded_file.read())
         tfile.close()
+        st.session_state.video_path = tfile.name
 
         cap = cv2.VideoCapture(tfile.name)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -304,28 +334,91 @@ if "비디오 업로드" in app_mode:
         original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         ret, first_frame = cap.read()
-        first_frame_rgb = None
         if ret:
-            first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+            st.session_state.first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
 
         cap.release()
 
         st.info(f"📹 영상 정보: {original_width}x{original_height} | {total_frames}프레임 | {original_fps:.1f}fps")
 
-        if first_frame_rgb is not None:
-            col1, col2 = st.columns([2, 1])
+        # ===== 실시간 미리보기 영역 =====
+        if st.session_state.first_frame_rgb is not None:
+            st.markdown("### 🖼️ 실시간 미리보기")
+            st.caption("💡 사이드바에서 설정을 변경하면 즉시 적용됩니다.")
+
+            col1, col2 = st.columns(2)
+
             with col1:
-                st.image(first_frame_rgb, caption="첫 프레임 미리보기", use_container_width=True)
+                st.markdown("**원본**")
+                st.image(st.session_state.first_frame_rgb, use_container_width=True)
+
             with col2:
-                st.markdown("### 워터마크 영역")
-                if st.session_state.logo_regions:
-                    for idx, region in enumerate(st.session_state.logo_regions):
-                        st.text(f"#{idx+1}: ({region['x']:.0f}, {region['y']:.0f})")
-                        if st.button("삭제", key=f"del_{idx}"):
+                st.markdown("**배경 제거 적용**")
+                if enable_preview:
+                    # 실시간으로 첫 프레임에 설정 적용
+                    preview_result = process_single_frame(
+                        st.session_state.first_frame_rgb,
+                        bg_color_rgb,
+                        tolerance,
+                        edge_smoothing,
+                        st.session_state.logo_regions if st.session_state.logo_regions else None
+                    )
+
+                    # 체크무늬 배경 위에 결과 표시 (투명 영역 시각화)
+                    checker_size = 10
+                    w, h = preview_result.size
+                    checker = Image.new('RGB', (w, h))
+                    for i in range(0, w, checker_size):
+                        for j in range(0, h, checker_size):
+                            color = (200, 200, 200) if (i // checker_size + j // checker_size) % 2 == 0 else (255, 255, 255)
+                            for x in range(i, min(i + checker_size, w)):
+                                for y in range(j, min(j + checker_size, h)):
+                                    checker.putpixel((x, y), color)
+
+                    checker.paste(preview_result, (0, 0), preview_result)
+                    st.image(checker, use_container_width=True)
+                    st.caption("🔲 체크무늬 = 투명 영역")
+                else:
+                    st.info("미리보기가 비활성화되어 있습니다.")
+
+            # 워터마크 영역 관리
+            st.markdown("### 🚫 워터마크 제거 영역")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                new_x = st.number_input("X", 0, original_width-1, 0, key="wx")
+            with col2:
+                new_y = st.number_input("Y", 0, original_height-1, 0, key="wy")
+            with col3:
+                new_w = st.number_input("너비", 1, original_width, 100, key="ww")
+            with col4:
+                new_h = st.number_input("높이", 1, original_height, 50, key="wh")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("➕ 영역 추가", use_container_width=True):
+                    st.session_state.logo_regions.append({
+                        'x': new_x, 'y': new_y, 'width': new_w, 'height': new_h
+                    })
+                    st.rerun()
+            with col2:
+                if st.button("🗑️ 모두 삭제", use_container_width=True):
+                    st.session_state.logo_regions = []
+                    st.rerun()
+
+            if st.session_state.logo_regions:
+                for idx, region in enumerate(st.session_state.logo_regions):
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.text(f"#{idx+1}: X={region['x']}, Y={region['y']}, W={region['width']}, H={region['height']}")
+                    with col2:
+                        if st.button("❌", key=f"del_region_{idx}"):
                             st.session_state.logo_regions.pop(idx)
                             st.rerun()
 
-        if st.button("✨ 변환 시작", type="primary", use_container_width=True):
+        st.markdown("---")
+
+        # 변환 버튼
+        if st.button("✨ 전체 변환 시작", type="primary", use_container_width=True):
             with st.spinner("비디오 처리 중..."):
                 final_width = output_width if use_custom_size else original_width
                 final_height = output_height if use_custom_size else original_height
@@ -340,8 +433,6 @@ if "비디오 업로드" in app_mode:
                 st.session_state.gif_speed = gif_speed
 
             st.success(f"✅ 변환 완료! {len(processed_images)}개 프레임")
-
-        os.unlink(tfile.name)
 
 # ===== AI 생성 모드 =====
 else:
@@ -361,30 +452,61 @@ else:
     )
 
     if uploaded_image is not None:
-        # 이미지 미리보기
         image = Image.open(uploaded_image)
+
+        # 이미지를 세션에 저장
+        uploaded_image.seek(0)
+        img_array = np.array(image.convert('RGB'))
+        st.session_state.first_frame_rgb = img_array
+
         col1, col2 = st.columns([1, 1])
 
         with col1:
-            st.image(image, caption="업로드된 이미지", use_container_width=True)
+            st.markdown("**원본 이미지**")
+            st.image(image, use_container_width=True)
             st.caption(f"크기: {image.width}x{image.height}")
 
         with col2:
-            st.markdown("### AI 생성 설정 요약")
-            st.write(f"- 비디오 길이: {video_length if 'video_length' in dir() else '25_frames_with_svd_xt'}")
-            st.write(f"- 모션 강도: {motion_bucket_id if 'motion_bucket_id' in dir() else 127}")
-            st.write(f"- FPS: {ai_fps if 'ai_fps' in dir() else 6}")
+            st.markdown("**배경 제거 미리보기**")
+            if enable_preview and st.session_state.first_frame_rgb is not None:
+                preview_result = process_single_frame(
+                    st.session_state.first_frame_rgb,
+                    bg_color_rgb,
+                    tolerance,
+                    edge_smoothing,
+                    None
+                )
+
+                # 체크무늬 배경
+                checker_size = 10
+                w, h = preview_result.size
+                checker = Image.new('RGB', (w, h))
+                for i in range(0, w, checker_size):
+                    for j in range(0, h, checker_size):
+                        color = (200, 200, 200) if (i // checker_size + j // checker_size) % 2 == 0 else (255, 255, 255)
+                        for x in range(i, min(i + checker_size, w)):
+                            for y in range(j, min(j + checker_size, h)):
+                                checker.putpixel((x, y), color)
+
+                checker.paste(preview_result, (0, 0), preview_result)
+                st.image(checker, use_container_width=True)
+                st.caption("🔲 체크무늬 = 투명 영역 (배경 제거 후)")
 
         # API 토큰 체크
-        if not api_token:
+        if "AI 생성" in app_mode and not api_token:
             st.error("❌ 사이드바에서 Replicate API Token을 입력해주세요!")
-        else:
+        elif "AI 생성" in app_mode:
+            st.markdown("---")
+            st.markdown("### AI 생성 설정")
+            st.write(f"- 비디오 길이: {video_length}")
+            st.write(f"- 모션 강도: {motion_bucket_id}")
+            st.write(f"- FPS: {ai_fps}")
+
             if st.button("🚀 AI 비디오 생성 & 스프라이트 변환", type="primary", use_container_width=True):
 
-                # 1단계: AI 비디오 생성
                 with st.status("🤖 AI 비디오 생성 중...", expanded=True) as status:
                     st.write("⏳ Stable Video Diffusion 모델 실행 중...")
-                    st.write("   (약 2~5분 소요될 수 있습니다)")
+                    st.write("   (약 2~5분 소요)")
 
                     try:
                         uploaded_image.seek(0)
@@ -397,9 +519,8 @@ else:
                         )
 
                         st.write("✅ 비디오 생성 완료!")
-                        st.write(f"📥 비디오 다운로드 중...")
+                        st.write("📥 비디오 다운로드 중...")
 
-                        # 비디오 다운로드
                         response = requests.get(video_url)
                         video_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
                         video_temp.write(response.content)
@@ -412,11 +533,9 @@ else:
                         st.error(f"오류: {str(e)}")
                         st.stop()
 
-                # 생성된 비디오 미리보기
                 st.subheader("🎬 생성된 AI 비디오")
                 st.video(video_temp.name)
 
-                # 2단계: 스프라이트 변환
                 with st.spinner("🎨 스프라이트 시트 생성 중..."):
                     cap = cv2.VideoCapture(video_temp.name)
                     ai_video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
