@@ -5,3 +5,4 @@ Pillow
 streamlit-drawable-canvas
 replicate
 requests
+python-dotenv
