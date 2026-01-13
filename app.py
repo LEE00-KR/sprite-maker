@@ -135,7 +135,7 @@ def generate_video_from_image(image_file, api_token, prompt="", video_length="25
 
     # Stable Video Diffusion 사용
     output = replicate.run(
-        "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd3af8d253968904295257f682fd7a95f9c",
+        "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
         input={
             "input_image": data_uri,
             "video_length": video_length,
