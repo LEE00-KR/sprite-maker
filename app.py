@@ -36,17 +36,188 @@ try:
 except ImportError:
     REPLICATE_AVAILABLE = False
 
-# --- 다중 배경색 제거 함수 (개선된 버전) ---
+# ============================================
+# 단계 정의
+# ============================================
+STEPS = {
+    1: "소스 입력",
+    2: "영상 확인",
+    3: "배경 제거",
+    4: "프레임 선택",
+    5: "다운로드"
+}
+
+# ============================================
+# Apple 스타일 다크모드 CSS
+# ============================================
+def apply_dark_theme_css():
+    st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+        .stApp {
+            background-color: #000000;
+            font-family: 'Inter', -apple-system, sans-serif;
+        }
+
+        h1, h2, h3 {
+            color: #F5F5F7 !important;
+            font-weight: 700;
+        }
+
+        .stButton > button {
+            border-radius: 12px;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+        .stButton > button:hover {
+            transform: scale(1.02);
+        }
+
+        /* Primary 버튼 */
+        div[data-testid="stButton"] button[kind="primary"] {
+            background-color: #0A84FF;
+        }
+
+        /* 이미지 둥글게 */
+        img {
+            border-radius: 12px;
+        }
+
+        /* 슬라이더 컬러 */
+        .stSlider > div > div > div {
+            background-color: #0A84FF;
+        }
+
+        /* Step Indicator 스타일 */
+        .step-indicator {
+            display: flex;
+            justify-content: space-between;
+            padding: 20px 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #333;
+        }
+        .step-item {
+            text-align: center;
+            flex: 1;
+        }
+        .step-current {
+            color: #0A84FF;
+            font-weight: 700;
+        }
+        .step-completed {
+            color: #30D158;
+        }
+        .step-pending {
+            color: #666;
+        }
+
+        /* 색상 박스 스타일 */
+        .color-box {
+            width: 60px;
+            height: 60px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            font-size: 24px;
+            color: #fff;
+            text-shadow: 0 0 3px #000;
+            transition: transform 0.2s;
+        }
+        .color-box:hover {
+            transform: scale(1.05);
+        }
+        .color-box-selected {
+            border: 3px solid #30D158 !important;
+        }
+
+        /* 프레임 그리드 스타일 */
+        .frame-selected {
+            border: 3px solid #30D158;
+            border-radius: 12px;
+            padding: 4px;
+        }
+        .frame-unselected {
+            border: 2px solid #333;
+            border-radius: 12px;
+            padding: 4px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ============================================
+# 세션 상태 통합 관리
+# ============================================
+def init_session():
+    """세션 상태 초기화 - 앱 시작 시 한 번만 실행"""
+    defaults = {
+        'step': 1,
+        'mode': None,  # 'ai' or 'video'
+        'video_path': None,
+        'video_frames': [],  # numpy array list (RGB)
+        'bg_colors': [],  # 제거할 배경색 목록 (hex)
+        'tolerance': 60,
+        'edge_smoothing': 1.0,
+        'use_hsv': True,
+        'processed_frames': [],  # 배경 제거된 PIL Image list
+        'selected_frame_indices': [],  # 선택된 프레임 인덱스
+        'gif_speed': 100,
+        'uploaded_image': None,
+        'use_custom_size': False,
+        'output_width': 512,
+        'output_height': 512,
+        'frame_interval': 1,
+        'max_frames': 100,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+def reset_to_step(step_num):
+    """특정 단계로 리셋"""
+    st.session_state.step = step_num
+    if step_num <= 1:
+        st.session_state.video_path = None
+        st.session_state.video_frames = []
+        st.session_state.uploaded_image = None
+    if step_num <= 2:
+        st.session_state.bg_colors = []
+    if step_num <= 3:
+        st.session_state.processed_frames = []
+    if step_num <= 4:
+        st.session_state.selected_frame_indices = []
+
+# ============================================
+# Step Indicator UI
+# ============================================
+def show_step_indicator(current_step):
+    """상단에 진행 단계 표시"""
+    cols = st.columns(5)
+    for i, (num, name) in enumerate(STEPS.items()):
+        with cols[i]:
+            if current_step == num:
+                st.markdown(f"**🔵 {num}. {name}**")
+            elif current_step > num:
+                st.markdown(f"✅ {num}. {name}")
+            else:
+                st.markdown(f"⚪ {num}. {name}")
+    st.markdown("---")
+
+# ============================================
+# 유틸리티 함수들
+# ============================================
+
+def hex_to_rgb(hex_color):
+    """HEX 색상을 RGB 튜플로 변환"""
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
 def remove_background_multi(image, target_colors, tolerance, edge_smoothing=0.0, use_hsv=True):
     """
     여러 배경색을 제거하고 투명하게 만듦 (그라데이션 대응)
-
-    Args:
-        image: BGR 또는 BGRA 이미지
-        target_colors: RGB 색상 튜플의 리스트 [(r,g,b), ...]
-        tolerance: 색상 허용 범위 (0-150)
-        edge_smoothing: 경계선 부드럽게 (0.0-10.0, 0.1 단위)
-        use_hsv: HSV 색상 공간도 함께 사용 (그라데이션 대응)
     """
     if len(image.shape) == 3 and image.shape[2] == 3:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
@@ -65,10 +236,9 @@ def remove_background_multi(image, target_colors, tolerance, edge_smoothing=0.0,
             hsv_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2HSV)
             target_hsv = cv2.cvtColor(np.uint8([[target_color]]), cv2.COLOR_RGB2HSV)[0][0]
 
-            # HSV 허용 범위 (Hue는 순환적이므로 별도 처리)
-            h_tol = max(15, tolerance // 5)  # 색상(Hue) 허용 범위
-            s_tol = tolerance  # 채도 허용 범위
-            v_tol = tolerance  # 명도 허용 범위
+            h_tol = max(15, tolerance // 5)
+            s_tol = tolerance
+            v_tol = tolerance
 
             lower_hsv = np.array([max(target_hsv[0] - h_tol, 0),
                                   max(target_hsv[1] - s_tol, 0),
@@ -78,29 +248,21 @@ def remove_background_multi(image, target_colors, tolerance, edge_smoothing=0.0,
                                   min(target_hsv[2] + v_tol, 255)])
 
             hsv_mask = cv2.inRange(hsv_image, lower_hsv, upper_hsv)
-
-            # RGB와 HSV 마스크 결합 (둘 중 하나라도 매칭되면 제거)
             color_mask = cv2.bitwise_or(rgb_mask, hsv_mask)
         else:
             color_mask = rgb_mask
 
-        # 전체 마스크에 추가
         combined_mask = cv2.bitwise_or(combined_mask, color_mask)
 
-    # 마스크 반전 (배경=0, 객체=255)
     mask_inv = cv2.bitwise_not(combined_mask)
 
-    # 경계선 부드럽게 처리 (개선된 방식)
     if edge_smoothing > 0:
-        # 부드러운 블러 크기 계산 (0.1 단위 지원)
         blur_size = int(edge_smoothing * 2) + 1
         if blur_size % 2 == 0:
             blur_size += 1
 
-        # 가우시안 블러로 경계선 부드럽게
         mask_smooth = cv2.GaussianBlur(mask_inv, (blur_size, blur_size), 0)
 
-        # 모폴로지 연산으로 작은 구멍 채우기
         kernel_size = max(3, int(edge_smoothing))
         if kernel_size % 2 == 0:
             kernel_size += 1
@@ -109,50 +271,32 @@ def remove_background_multi(image, target_colors, tolerance, edge_smoothing=0.0,
 
         mask_inv = mask_smooth
 
-    # 알파 채널 적용
     image[:, :, 3] = mask_inv
-
-    # ★ 핵심: 투명/반투명 영역의 RGB를 인접 불투명 픽셀로 채움 (색 번짐 방지)
     image = fill_transparent_with_nearby_color(image)
 
     return image
 
 def fill_transparent_with_nearby_color(image):
-    """
-    투명/반투명 영역의 RGB 값을 인접한 불투명 픽셀 색상으로 채움
-    GIF 변환 시 보라색 테두리 방지
-    """
+    """투명/반투명 영역의 RGB 값을 인접한 불투명 픽셀 색상으로 채움"""
     alpha = image[:, :, 3]
     rgb = image[:, :, :3].copy()
 
-    # 불투명 영역 마스크 (알파 > 200)
     opaque_mask = (alpha > 200).astype(np.uint8)
-
-    # 투명/반투명 영역 마스크
     transparent_mask = (alpha <= 200).astype(np.uint8)
 
     if np.sum(transparent_mask) == 0:
         return image
 
-    # 각 채널에 대해 불투명 영역 색상을 투명 영역으로 팽창
     kernel = np.ones((5, 5), np.uint8)
     for c in range(3):
         channel = rgb[:, :, c].astype(np.float32)
-        # 불투명 영역만 사용하여 팽창
         masked_channel = channel * opaque_mask
         dilated = cv2.dilate(masked_channel, kernel, iterations=3)
-        # 투명 영역에 팽창된 색상 적용
         rgb[:, :, c] = np.where(transparent_mask > 0, dilated, channel).astype(np.uint8)
 
     image[:, :, :3] = rgb
     return image
 
-# --- 단일 배경색 제거 (하위 호환성) ---
-def remove_background(image, target_color, tolerance, edge_smoothing=0):
-    """배경색을 제거하고 투명하게 만듦 (단일 색상용 래퍼)"""
-    return remove_background_multi(image, [target_color], tolerance, float(edge_smoothing), use_hsv=False)
-
-# --- 로고 영역 제거 ---
 def remove_logo_area(image, regions):
     """지정된 영역을 투명하게 만듦"""
     if len(image.shape) == 3 and image.shape[2] == 3:
@@ -166,13 +310,11 @@ def remove_logo_area(image, regions):
             image[y:y+h, x:x+w, 3] = 0
     return image
 
-# --- 이미지 리사이즈 ---
 def resize_image(pil_img, target_width, target_height):
     if target_width > 0 and target_height > 0:
         return pil_img.resize((target_width, target_height), Image.Resampling.LANCZOS)
     return pil_img
 
-# --- 스프라이트 시트 생성 ---
 def create_sprite_sheet(images, columns=0):
     if not images:
         return None
@@ -191,35 +333,21 @@ def create_sprite_sheet(images, columns=0):
             sheet.paste(img, ((idx % columns) * width, (idx // columns) * height))
     return sheet
 
-# --- 단일 프레임 처리 (미리보기용) - 다중 색상 지원 ---
 def process_single_frame(frame_rgb, bg_colors_rgb, tolerance, edge_smoothing, logo_regions=None, use_hsv=True):
-    """
-    단일 프레임의 배경 제거 처리 (미리보기용)
-
-    Args:
-        frame_rgb: RGB 프레임
-        bg_colors_rgb: RGB 색상 튜플 또는 리스트 [(r,g,b), ...]
-        tolerance: 색상 허용 범위
-        edge_smoothing: 경계선 부드럽게 (0.0-10.0)
-        logo_regions: 로고 제거 영역
-        use_hsv: HSV 색상 공간 사용 여부
-    """
+    """단일 프레임의 배경 제거 처리 (미리보기용)"""
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-    # 단일 색상을 리스트로 변환
     if isinstance(bg_colors_rgb, tuple) and len(bg_colors_rgb) == 3 and isinstance(bg_colors_rgb[0], int):
         bg_colors_rgb = [bg_colors_rgb]
 
     if logo_regions:
         frame_bgra = remove_logo_area(frame_bgr.copy(), logo_regions)
-        # 다중 색상 배경 제거 적용
         processed_cv = remove_background_multi(frame_bgra, bg_colors_rgb, tolerance, edge_smoothing, use_hsv)
     else:
         processed_cv = remove_background_multi(frame_bgr, bg_colors_rgb, tolerance, edge_smoothing, use_hsv)
 
     return Image.fromarray(cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGBA))
 
-# --- AI 비디오 생성 ---
 def generate_video_from_image(image_file, api_token, prompt="", video_length="25_frames_with_svd_xt", motion_bucket_id=60, fps=30):
     """Replicate API로 이미지에서 비디오 생성"""
     os.environ["REPLICATE_API_TOKEN"] = api_token
@@ -234,7 +362,6 @@ def generate_video_from_image(image_file, api_token, prompt="", video_length="25
     mime_type = "image/png" if header[:8] == b'\x89PNG\r\n\x1a\n' else "image/jpeg"
     data_uri = f"data:{mime_type};base64,{base64_image}"
 
-    # Stable Video Diffusion 사용
     output = replicate.run(
         "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
         input={
@@ -247,64 +374,55 @@ def generate_video_from_image(image_file, api_token, prompt="", video_length="25
 
     return output
 
-# --- 비디오 처리 파이프라인 (다중 색상 지원) ---
-def process_video_to_sprites(video_path, bg_colors_rgb, tolerance, edge_smoothing,
-                              frame_interval, max_frames, use_custom_size,
-                              output_width, output_height, logo_regions=None, use_hsv=True):
-    """
-    비디오를 스프라이트 이미지로 변환
-
-    Args:
-        video_path: 비디오 파일 경로
-        bg_colors_rgb: RGB 색상 튜플 또는 리스트 [(r,g,b), ...]
-        tolerance: 색상 허용 범위
-        edge_smoothing: 경계선 부드럽게 (0.0-10.0)
-        frame_interval: 프레임 추출 간격
-        max_frames: 최대 프레임 수
-        use_custom_size: 크기 직접 지정 여부
-        output_width, output_height: 출력 크기
-        logo_regions: 로고 제거 영역
-        use_hsv: HSV 색상 공간 사용 여부
-    """
+def extract_frames_from_video(video_path):
+    """비디오에서 모든 프레임을 추출하여 RGB numpy array 리스트로 반환"""
     cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    processed_pil_images = []
-
-    # 단일 색상을 리스트로 변환
-    if isinstance(bg_colors_rgb, tuple) and len(bg_colors_rgb) == 3 and isinstance(bg_colors_rgb[0], int):
-        bg_colors_rgb = [bg_colors_rgb]
-
-    frame_idx = 0
-    extracted_count = 0
+    frames = []
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
-        if frame_idx % frame_interval == 0 and extracted_count < max_frames:
-            if logo_regions:
-                frame = remove_logo_area(frame, logo_regions)
-
-            # 다중 색상 배경 제거 적용
-            processed_cv = remove_background_multi(frame, bg_colors_rgb, tolerance, edge_smoothing, use_hsv)
-
-            pil_img = Image.fromarray(cv2.cvtColor(processed_cv, cv2.COLOR_BGRA2RGBA))
-
-            if use_custom_size and output_width > 0 and output_height > 0:
-                pil_img = resize_image(pil_img, output_width, output_height)
-
-            processed_pil_images.append(pil_img)
-            extracted_count += 1
-
-        frame_idx += 1
-        if extracted_count >= max_frames:
-            break
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame_rgb)
 
     cap.release()
-    return processed_pil_images, total_frames
+    return frames
 
-# --- 이미지에서 색상 추출 (스포이드) ---
+def process_all_frames():
+    """모든 프레임에 배경 제거 적용"""
+    frames = st.session_state.video_frames
+    bg_colors_rgb = [hex_to_rgb(c) for c in st.session_state.bg_colors]
+
+    if not bg_colors_rgb:
+        bg_colors_rgb = [(255, 255, 255)]
+
+    processed = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for i, frame_rgb in enumerate(frames):
+        status_text.text(f"프레임 처리 중... {i+1}/{len(frames)}")
+
+        pil_img = process_single_frame(
+            frame_rgb, bg_colors_rgb,
+            st.session_state.tolerance,
+            st.session_state.edge_smoothing,
+            use_hsv=st.session_state.use_hsv
+        )
+
+        if st.session_state.use_custom_size:
+            pil_img = resize_image(pil_img, st.session_state.output_width, st.session_state.output_height)
+
+        processed.append(pil_img)
+        progress_bar.progress((i + 1) / len(frames))
+
+    status_text.empty()
+    progress_bar.empty()
+
+    st.session_state.processed_frames = processed
+    st.session_state.selected_frame_indices = list(range(len(processed)))
+
 def get_color_at_position(image_rgb, x, y):
     """이미지의 특정 좌표에서 RGB 색상 추출"""
     if 0 <= x < image_rgb.shape[1] and 0 <= y < image_rgb.shape[0]:
@@ -312,8 +430,7 @@ def get_color_at_position(image_rgb, x, y):
         return f"#{r:02x}{g:02x}{b:02x}"
     return "#000000"
 
-# --- 이미지에서 주요 색상 추출 ---
-def extract_dominant_colors(image_rgb, n_colors=5):
+def extract_dominant_colors(image_rgb, n_colors=8):
     """이미지 가장자리에서 주요 배경색 후보 추출"""
     from collections import Counter
     h, w = image_rgb.shape[:2]
@@ -327,8 +444,7 @@ def extract_dominant_colors(image_rgb, n_colors=5):
     most_common = color_counts.most_common(n_colors)
     return [f"#{r:02x}{g:02x}{b:02x}" for (r, g, b), _ in most_common]
 
-# --- 체크무늬 배경 생성 ---
-def create_checker_background(width, height, checker_size=10):
+def create_checker_background(width, height, checker_size=15):
     checker = Image.new('RGB', (width, height))
     for i in range(0, width, checker_size):
         for j in range(0, height, checker_size):
@@ -338,60 +454,38 @@ def create_checker_background(width, height, checker_size=10):
                     checker.putpixel((x, y), color)
     return checker
 
-# --- 깔끔한 GIF 프레임 생성 (보라색 테두리 문제 해결) ---
 def create_clean_gif_frames(images):
-    """
-    RGBA 이미지를 GIF용 팔레트 이미지로 변환
-    프리멀티플라이드 알파와 경계 색상 처리로 보라색 테두리 문제 해결
-    """
+    """RGBA 이미지를 GIF용 팔레트 이미지로 변환"""
     converted_frames = []
 
     for frame in images:
         if frame.mode == 'RGBA':
-            # 알파 채널 분리
             r, g, b, a = frame.split()
             alpha = np.array(a)
 
-            # 반투명 픽셀의 경계 처리 (알파값이 0~255 사이인 영역)
-            # 알파값이 128 미만인 픽셀은 완전 투명으로 처리
             alpha_threshold = 128
             alpha_binary = np.where(alpha >= alpha_threshold, 255, 0).astype(np.uint8)
 
-            # 경계 확장 (Erosion으로 경계의 반투명 영역을 깔끔하게 정리)
             kernel = np.ones((2, 2), np.uint8)
             alpha_eroded = cv2.erode(alpha_binary, kernel, iterations=1)
 
-            # 원본 RGB 채널 가져오기
             rgb_array = np.array(frame.convert('RGB'))
-
-            # 투명 영역에서는 인접한 불투명 픽셀 색상으로 확장 (색상 번짐 방지)
-            # 불투명 영역의 색상을 팽창시켜 경계 색상 문제 해결
             mask_opaque = alpha_eroded > 0
 
-            # 각 채널별로 색상 확장 처리
             for c in range(3):
                 channel = rgb_array[:, :, c].astype(np.float32)
-                # 불투명 영역 마스크로 색상 팽창
                 dilated = cv2.dilate(channel, kernel, iterations=2)
-                # 투명 영역에는 팽창된 색상 적용
                 rgb_array[:, :, c] = np.where(mask_opaque, channel, dilated).astype(np.uint8)
 
-            # 새 RGBA 이미지 생성
             clean_frame = Image.fromarray(rgb_array, 'RGB')
             clean_alpha = Image.fromarray(alpha_eroded, 'L')
-            clean_rgba = clean_frame.copy()
-            clean_rgba.putalpha(clean_alpha)
 
-            # 특수한 투명 마커 색상 사용 (실제 이미지에 없을 색상)
-            # 밝은 마젠타 대신 극단적인 청록색 사용 (0, 255, 254)
             trans_color = (0, 255, 254)
             background = Image.new('RGB', frame.size, trans_color)
             background.paste(clean_frame, (0, 0), clean_alpha)
 
-            # 팔레트 변환
             p_frame = background.convert('P', palette=Image.ADAPTIVE, colors=255)
 
-            # 투명 색상 인덱스 찾기
             palette = p_frame.getpalette()
             trans_index = 0
             for i in range(256):
@@ -405,726 +499,556 @@ def create_clean_gif_frames(images):
 
     return converted_frames
 
-# ===== UI 설정 =====
-st.set_page_config(page_title="Sprite Maker + AI", layout="wide")
-st.header("🦖 스프라이트 생성기")
+# ============================================
+# 공통 UI 함수들
+# ============================================
 
-# ===== 세션 상태 초기화 =====
-if 'current_step' not in st.session_state:
-    st.session_state.current_step = 1
-if 'uploaded_image' not in st.session_state:
-    st.session_state.uploaded_image = None
-if 'generated_video_path' not in st.session_state:
-    st.session_state.generated_video_path = None
-if 'video_frames' not in st.session_state:
-    st.session_state.video_frames = None
-if 'processed_images' not in st.session_state:
-    st.session_state.processed_images = []
-if 'logo_regions' not in st.session_state:
-    st.session_state.logo_regions = []
-if 'picked_color' not in st.session_state:
-    st.session_state.picked_color = "#000000"
-# 다중 배경색 제거 목록
-if 'bg_colors_to_remove' not in st.session_state:
-    st.session_state.bg_colors_to_remove = []
-# HSV 색상 공간 사용 여부
-if 'use_hsv' not in st.session_state:
-    st.session_state.use_hsv = True
+def render_background_removal_ui(first_frame_rgb):
+    """
+    배경 제거 설정 UI - AI 모드/비디오 모드 모두 동일하게 사용
+    레이아웃: 2열 구성 (왼쪽: 설정 패널, 오른쪽: 실시간 미리보기)
+    """
+    col_settings, col_preview = st.columns([1, 1.5])
 
-# ===== 사이드바: 모드 선택 =====
-with st.sidebar:
-    st.subheader("📌 작업 모드")
-    app_mode = st.radio(
-        "모드 선택",
-        ["🤖 AI 생성 (이미지→비디오)", "📹 비디오 수정"],
-        key="app_mode"
-    )
+    with col_settings:
+        st.subheader("🎨 배경색 선택")
 
-# ===== AI 생성 모드 =====
-if "AI 생성" in app_mode:
+        # 1. 추천 색상 표시
+        dominant_colors = extract_dominant_colors(first_frame_rgb, 8)
+        st.caption("📌 추천 배경색 (클릭하여 추가/제거)")
 
-    # ========== STEP 1: 이미지 업로드 ==========
-    st.subheader("📤 Step 1: 이미지 업로드")
+        # 색상 박스 HTML 표시
+        color_box_html = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;'>"
+        for i, color in enumerate(dominant_colors):
+            is_selected = color in st.session_state.bg_colors
+            border = "3px solid #30D158" if is_selected else "2px solid #555"
+            check_mark = "✓" if is_selected else ""
+            color_box_html += f"""
+            <div style='width:60px;height:60px;background:{color};border:{border};border-radius:8px;
+            display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);
+            font-size:24px;color:#fff;text-shadow:0 0 3px #000;' title='{color}'>{check_mark}</div>
+            """
+        color_box_html += "</div>"
+        st.markdown(color_box_html, unsafe_allow_html=True)
 
-    uploaded_image = st.file_uploader(
-        "이미지 파일 (PNG/JPG)",
-        type=["png", "jpg", "jpeg"],
-        key="ai_image_uploader"
-    )
+        # 버튼으로 색상 추가/제거
+        color_cols = st.columns(4)
+        for i, hex_color in enumerate(dominant_colors):
+            with color_cols[i % 4]:
+                is_selected = hex_color in st.session_state.bg_colors
+                btn_label = "✓ 선택됨" if is_selected else "추가"
+                if st.button(btn_label, key=f"color_{i}", use_container_width=True):
+                    if is_selected:
+                        st.session_state.bg_colors.remove(hex_color)
+                    else:
+                        st.session_state.bg_colors.append(hex_color)
+                    st.rerun()
 
-    if uploaded_image:
-        st.session_state.uploaded_image = uploaded_image
-        image = Image.open(uploaded_image)
+        st.markdown("---")
 
-        col1, col2 = st.columns([1, 2])
+        # 2. 선택된 색상 목록
+        st.caption(f"🎯 제거할 색상: {len(st.session_state.bg_colors)}개")
+        if st.session_state.bg_colors:
+            colors_html = "<div style='display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;margin-bottom:10px;'>"
+            for color in st.session_state.bg_colors:
+                colors_html += f"""
+                <div style='display:flex;flex-direction:column;align-items:center;'>
+                    <div style='width:40px;height:40px;background:{color};border:2px solid #fff;border-radius:6px;'></div>
+                    <div style='font-size:9px;color:#aaa;margin-top:4px;'>{color}</div>
+                </div>
+                """
+            colors_html += "</div>"
+            st.markdown(colors_html, unsafe_allow_html=True)
+
+            # 개별 색상 제거 버튼
+            remove_cols = st.columns(min(len(st.session_state.bg_colors), 6))
+            for i, color in enumerate(st.session_state.bg_colors[:6]):
+                with remove_cols[i]:
+                    if st.button("✕", key=f"remove_{i}", use_container_width=True):
+                        st.session_state.bg_colors.remove(color)
+                        st.rerun()
+
+            if st.button("🗑️ 모든 색상 초기화"):
+                st.session_state.bg_colors = []
+                st.rerun()
+        else:
+            st.info("💡 위에서 제거할 배경색을 선택하세요.")
+
+        st.markdown("---")
+
+        # 3. 커스텀 색상 추가
+        st.caption("🎨 직접 색상 선택")
+        col_pick, col_add = st.columns([3, 1])
+        with col_pick:
+            custom_color = st.color_picker("색상", "#ffffff", key="custom_picker")
+        with col_add:
+            st.write("")
+            st.write("")
+            if st.button("추가", key="add_custom"):
+                if custom_color not in st.session_state.bg_colors:
+                    st.session_state.bg_colors.append(custom_color)
+                    st.rerun()
+
+        st.markdown("---")
+
+        # 4. 파라미터 슬라이더
+        st.caption("⚙️ 제거 설정")
+        st.session_state.tolerance = st.slider(
+            "민감도 (색상 허용 범위)", 0, 150,
+            st.session_state.tolerance,
+            help="높을수록 비슷한 색상도 함께 제거"
+        )
+        st.session_state.edge_smoothing = st.slider(
+            "경계선 부드럽게", 0.0, 5.0,
+            st.session_state.edge_smoothing, step=0.5
+        )
+        st.session_state.use_hsv = st.checkbox(
+            "🌈 HSV 매칭 (그라데이션 대응)",
+            st.session_state.use_hsv,
+            help="비슷한 색조의 그라데이션도 함께 제거"
+        )
+
+        st.markdown("---")
+
+        # 5. 출력 설정
+        st.caption("📐 출력 설정")
+        st.session_state.use_custom_size = st.checkbox("크기 직접 지정", st.session_state.use_custom_size)
+        if st.session_state.use_custom_size:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.session_state.output_width = st.number_input("너비", 1, 4096, st.session_state.output_width)
+            with col2:
+                st.session_state.output_height = st.number_input("높이", 1, 4096, st.session_state.output_height)
+
+    with col_preview:
+        st.subheader("👁️ 실시간 미리보기")
+
+        # 스포이드 기능
+        st.caption("🔍 이미지 클릭으로 색상 추출")
+        frame_pil = Image.fromarray(first_frame_rgb)
+        display_width = min(500, frame_pil.width)
+        scale = display_width / frame_pil.width
+        display_height = int(frame_pil.height * scale)
+        frame_display = frame_pil.resize((display_width, display_height), Image.Resampling.LANCZOS)
+
+        coords = streamlit_image_coordinates(frame_display, key="eyedropper")
+
+        if coords is not None:
+            orig_x = int(coords["x"] / scale)
+            orig_y = int(coords["y"] / scale)
+            picked = get_color_at_position(first_frame_rgb, orig_x, orig_y)
+            if picked not in st.session_state.bg_colors:
+                st.session_state.bg_colors.append(picked)
+                st.rerun()
+
+        st.markdown("---")
+
+        # 원본 vs 처리 결과 비교
+        tab_orig, tab_proc = st.tabs(["📷 원본", "✨ 배경 제거"])
+
+        with tab_orig:
+            st.image(first_frame_rgb, use_container_width=True)
+
+        with tab_proc:
+            if st.session_state.bg_colors:
+                colors_rgb = [hex_to_rgb(c) for c in st.session_state.bg_colors]
+                preview = process_single_frame(
+                    first_frame_rgb, colors_rgb,
+                    st.session_state.tolerance,
+                    st.session_state.edge_smoothing,
+                    use_hsv=st.session_state.use_hsv
+                )
+                # 체크무늬 배경에 합성
+                checker = create_checker_background(preview.width, preview.height, 15)
+                checker.paste(preview, (0, 0), preview)
+                st.image(checker, use_container_width=True)
+                st.caption("🔲 체크무늬 = 투명 영역")
+            else:
+                st.warning("제거할 배경색을 선택해주세요")
+
+def render_frame_selection_ui():
+    """프레임 선택 화면 - 애니메이션 미리보기 포함"""
+    frames = st.session_state.processed_frames
+
+    if not frames:
+        st.error("처리된 프레임이 없습니다")
+        return
+
+    # ===== 상단: 선택된 프레임 애니메이션 미리보기 =====
+    st.subheader("🎬 선택된 프레임 미리보기")
+
+    selected_indices = st.session_state.selected_frame_indices
+
+    if selected_indices:
+        selected_frames = [frames[i] for i in sorted(selected_indices)]
+
+        col1, col2 = st.columns([2, 1])
         with col1:
-            st.image(image, caption=f"업로드된 이미지 ({image.width}x{image.height})", width="stretch")
+            # GIF로 변환하여 애니메이션 표시
+            gif_buffer = io.BytesIO()
+            gif_frames = create_clean_gif_frames(selected_frames)
+
+            if gif_frames:
+                first_frame, first_trans = gif_frames[0]
+                append_frames = [f[0] for f in gif_frames[1:]]
+                first_frame.save(
+                    gif_buffer, format="GIF", save_all=True,
+                    append_images=append_frames,
+                    duration=st.session_state.gif_speed, loop=0, disposal=2,
+                    transparency=first_trans if first_trans is not None else 0
+                )
+
+            st.image(gif_buffer.getvalue(), caption=f"선택된 {len(selected_frames)}개 프레임")
 
         with col2:
-            st.success("✅ 이미지 업로드 완료!")
-            st.caption("다음 단계에서 AI가 이 이미지를 움직이는 비디오로 변환합니다.")
+            st.session_state.gif_speed = st.slider(
+                "재생 속도 (ms)", 50, 300, st.session_state.gif_speed
+            )
+            st.info(f"✅ 선택: {len(selected_indices)} / 전체: {len(frames)}")
+    else:
+        st.info("프레임을 선택하면 여기에 애니메이션이 표시됩니다")
 
-        if st.session_state.current_step < 2:
-            st.session_state.current_step = 2
+    st.markdown("---")
 
-    # ========== STEP 2: AI 비디오 생성 ==========
-    if st.session_state.current_step >= 2 and st.session_state.uploaded_image:
-        st.markdown("---")
-        st.subheader("🤖 Step 2: AI 비디오 생성")
+    # ===== 중단: 전체 선택/해제 버튼 =====
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("✅ 전체 선택", use_container_width=True):
+            st.session_state.selected_frame_indices = list(range(len(frames)))
+            st.rerun()
+    with col2:
+        if st.button("❌ 전체 해제", use_container_width=True):
+            st.session_state.selected_frame_indices = []
+            st.rerun()
+    with col3:
+        if st.button("🔄 선택 반전", use_container_width=True):
+            all_indices = set(range(len(frames)))
+            selected = set(st.session_state.selected_frame_indices)
+            st.session_state.selected_frame_indices = list(all_indices - selected)
+            st.rerun()
 
-        if not REPLICATE_API_TOKEN:
-            st.warning("⚠️ Replicate API 토큰이 설정되지 않았습니다.")
-            with st.expander("🔑 API 토큰 설정 방법", expanded=True):
-                st.markdown("""
+    st.markdown("---")
+
+    # ===== 하단: 프레임 그리드 =====
+    st.subheader("🖼️ 프레임 선택")
+
+    COLS_PER_ROW = 5
+    THUMB_SIZE = 120
+
+    for row_start in range(0, len(frames), COLS_PER_ROW):
+        cols = st.columns(COLS_PER_ROW)
+        for col_idx in range(COLS_PER_ROW):
+            frame_idx = row_start + col_idx
+            if frame_idx >= len(frames):
+                break
+
+            with cols[col_idx]:
+                is_selected = frame_idx in st.session_state.selected_frame_indices
+
+                # 썸네일 생성
+                thumb = frames[frame_idx].copy()
+                thumb.thumbnail((THUMB_SIZE, THUMB_SIZE))
+
+                # 선택 상태에 따른 스타일링
+                if is_selected:
+                    st.markdown(f"""
+                        <div style="border:3px solid #30D158;border-radius:12px;padding:4px;">
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                        <div style="border:2px solid #333;border-radius:12px;padding:4px;">
+                    """, unsafe_allow_html=True)
+
+                st.image(thumb, use_container_width=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # 체크박스
+                checkbox_label = f"✓ #{frame_idx+1}" if is_selected else f"#{frame_idx+1}"
+                new_value = st.checkbox(checkbox_label, value=is_selected, key=f"frame_{frame_idx}")
+
+                if new_value and frame_idx not in st.session_state.selected_frame_indices:
+                    st.session_state.selected_frame_indices.append(frame_idx)
+                    st.rerun()
+                elif not new_value and frame_idx in st.session_state.selected_frame_indices:
+                    st.session_state.selected_frame_indices.remove(frame_idx)
+                    st.rerun()
+
+def render_download_ui():
+    """다운로드 화면"""
+    frames = st.session_state.processed_frames
+    selected_indices = st.session_state.selected_frame_indices
+
+    if not frames or not selected_indices:
+        st.error("선택된 프레임이 없습니다")
+        return
+
+    selected_frames = [frames[i] for i in sorted(selected_indices)]
+
+    st.subheader("📦 결과물 다운로드")
+    st.info(f"✅ 선택된 프레임: {len(selected_frames)}개")
+
+    # 미리보기
+    col_gif, col_sheet = st.columns(2)
+
+    with col_gif:
+        st.markdown("#### 🎬 애니메이션")
+
+        # GIF 생성
+        gif_buffer = io.BytesIO()
+        gif_frames = create_clean_gif_frames(selected_frames)
+
+        if gif_frames:
+            first_frame, first_trans = gif_frames[0]
+            append_frames = [f[0] for f in gif_frames[1:]]
+            first_frame.save(
+                gif_buffer, format="GIF", save_all=True,
+                append_images=append_frames,
+                duration=st.session_state.gif_speed, loop=0, disposal=2,
+                transparency=first_trans if first_trans is not None else 0
+            )
+
+        st.image(gif_buffer.getvalue())
+
+        # APNG 생성
+        apng_buffer = io.BytesIO()
+        selected_frames[0].save(
+            apng_buffer, format="PNG", save_all=True,
+            append_images=selected_frames[1:],
+            duration=st.session_state.gif_speed, loop=0
+        )
+
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button("🎬 GIF", gif_buffer.getvalue(), "animation.gif", "image/gif", use_container_width=True)
+        with dl_col2:
+            st.download_button("🖼️ APNG (권장)", apng_buffer.getvalue(), "animation.png", "image/png", use_container_width=True,
+                              help="APNG는 완벽한 투명도를 지원합니다.")
+
+    with col_sheet:
+        st.markdown("#### 📄 스프라이트 시트")
+
+        sheet_cols = st.number_input("열 수 (0=가로 한 줄)", 0, len(selected_frames), 0)
+        sprite_sheet = create_sprite_sheet(selected_frames, sheet_cols)
+        sheet_buffer = io.BytesIO()
+        sprite_sheet.save(sheet_buffer, format="PNG")
+
+        st.image(sprite_sheet, caption=f"{sprite_sheet.width}x{sprite_sheet.height}")
+
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button("📄 PNG 저장", sheet_buffer.getvalue(), "sprite_sheet.png", "image/png", use_container_width=True)
+        with dl_col2:
+            # ZIP 다운로드
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zf:
+                for idx, img in enumerate(selected_frames):
+                    img_arr = io.BytesIO()
+                    img.save(img_arr, format="PNG")
+                    zf.writestr(f"frame_{idx:03d}.png", img_arr.getvalue())
+            st.download_button("📦 ZIP 저장", zip_buffer.getvalue(), "frames.zip", "application/zip", use_container_width=True)
+
+# ============================================
+# 메인 플로우
+# ============================================
+def main():
+    st.set_page_config(page_title="🦖 Sprite Maker", layout="wide")
+    apply_dark_theme_css()
+    init_session()
+
+    st.title("🦖 스프라이트 생성기")
+    show_step_indicator(st.session_state.step)
+
+    # ===== STEP 1: 소스 입력 =====
+    if st.session_state.step == 1:
+        st.subheader("📤 Step 1: 소스 입력")
+
+        mode = st.radio(
+            "모드 선택",
+            ["🤖 AI 이미지→영상", "📹 영상 업로드"],
+            horizontal=True,
+            key="mode_selector"
+        )
+        st.session_state.mode = 'ai' if 'AI' in mode else 'video'
+
+        if st.session_state.mode == 'ai':
+            # 이미지 업로드 + AI 생성 옵션
+            uploaded = st.file_uploader("이미지 업로드", type=['png', 'jpg', 'jpeg'], key="ai_img_uploader")
+
+            if uploaded:
+                st.session_state.uploaded_image = uploaded
+                image = Image.open(uploaded)
+
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.image(image, caption=f"업로드된 이미지 ({image.width}x{image.height})", use_container_width=True)
+
+                with col2:
+                    if not REPLICATE_API_TOKEN:
+                        st.warning("⚠️ Replicate API 토큰이 설정되지 않았습니다.")
+                        with st.expander("🔑 API 토큰 설정 방법", expanded=True):
+                            st.markdown("""
 **Streamlit Cloud 배포:**
 1. 앱 우측 상단 메뉴 → Settings → Secrets
 2. 아래 내용을 입력 후 Save:
 ```toml
 REPLICATE_API_TOKEN = "your_token_here"
 ```
-3. 앱을 **Reboot** 해주세요
 
 **로컬 실행:**
 - 프로젝트 폴더에 `.env` 파일 생성
 - `REPLICATE_API_TOKEN=your_token` 추가
 
 🔗 [Replicate API 토큰 발급](https://replicate.com/account/api-tokens)
-                """)
-            st.info("💡 API 토큰 없이 사용하려면 사이드바에서 '비디오 수정' 모드를 선택하세요.")
-            st.stop()
+                            """)
+                    else:
+                        st.success("✅ API 토큰 설정됨")
 
-        # AI 생성 옵션
-        with st.expander("🎬 AI 생성 옵션", expanded=True):
-            ai_prompt = st.text_area(
-                "프롬프트 (선택사항)",
-                placeholder="예: gentle swaying motion, breathing animation, subtle movement...",
-                help="원하는 움직임을 설명하세요. (현재 SVD 모델은 프롬프트 영향이 제한적)"
-            )
+                        with st.expander("🎬 AI 생성 옵션", expanded=True):
+                            motion = st.slider("모션 강도", 1, 255, 60, help="높을수록 움직임 큼")
+                            video_length = st.selectbox(
+                                "비디오 길이",
+                                ["14_frames_with_svd", "25_frames_with_svd_xt"],
+                                index=1
+                            )
+                            ai_fps = st.slider("FPS", 1, 30, 30)
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                video_length = st.selectbox(
-                    "비디오 길이",
-                    ["14_frames_with_svd", "25_frames_with_svd_xt"],
-                    index=1
-                )
-            with col2:
-                motion_bucket_id = st.slider("모션 강도", 1, 255, 60, help="높을수록 움직임 큼")
-            with col3:
-                ai_fps = st.slider("FPS", 1, 30, 30)
+                        if st.button("🚀 AI 영상 생성", type="primary", use_container_width=True):
+                            with st.status("🤖 AI 비디오 생성 중...", expanded=True) as status:
+                                st.write("⏳ Stable Video Diffusion 실행 중...")
+                                st.write("   약 2~5분 소요됩니다.")
 
-        # 이미 생성된 비디오가 있는지 확인
-        if st.session_state.generated_video_path and os.path.exists(st.session_state.generated_video_path):
-            st.success("✅ AI 비디오 생성 완료!")
-            st.video(st.session_state.generated_video_path)
+                                try:
+                                    st.session_state.uploaded_image.seek(0)
+                                    video_url = generate_video_from_image(
+                                        st.session_state.uploaded_image,
+                                        REPLICATE_API_TOKEN,
+                                        video_length=video_length,
+                                        motion_bucket_id=motion,
+                                        fps=ai_fps
+                                    )
+
+                                    st.write("✅ 생성 완료! 다운로드 중...")
+
+                                    response = requests.get(video_url)
+                                    video_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                                    video_temp.write(response.content)
+                                    video_temp.close()
+
+                                    st.session_state.video_path = video_temp.name
+                                    st.session_state.video_frames = extract_frames_from_video(video_temp.name)
+                                    st.session_state.step = 2
+                                    status.update(label="✅ AI 비디오 생성 완료!", state="complete")
+                                    st.rerun()
+
+                                except Exception as e:
+                                    status.update(label="❌ 생성 실패", state="error")
+                                    st.error(f"오류: {str(e)}")
+
+        else:
+            # 비디오 업로드
+            uploaded_video = st.file_uploader("비디오 업로드", type=['mp4', 'mov', 'avi'], key="video_uploader")
+
+            if uploaded_video:
+                tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                tfile.write(uploaded_video.read())
+                tfile.close()
+
+                st.session_state.video_path = tfile.name
+                st.session_state.video_frames = extract_frames_from_video(tfile.name)
+
+                st.video(tfile.name)
+                st.info(f"📹 총 {len(st.session_state.video_frames)}개 프레임")
+
+                if st.button("➡️ 다음 단계로", type="primary", use_container_width=True):
+                    st.session_state.step = 2
+                    st.rerun()
+
+    # ===== STEP 2: 영상 확인 =====
+    elif st.session_state.step == 2:
+        st.subheader("📹 Step 2: 영상 확인")
+
+        if st.session_state.video_path and st.session_state.video_frames:
+            st.video(st.session_state.video_path)
+            st.info(f"📹 총 {len(st.session_state.video_frames)}개 프레임")
 
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("🔄 다시 생성하기", width="stretch"):
-                    st.session_state.generated_video_path = None
-                    st.session_state.current_step = 2
+                if st.button("⬅️ 다시 선택", use_container_width=True):
+                    reset_to_step(1)
                     st.rerun()
             with col2:
-                if st.button("➡️ 다음 단계로", type="primary", width="stretch"):
-                    st.session_state.current_step = 3
+                if st.button("➡️ 배경 제거", type="primary", use_container_width=True):
+                    st.session_state.step = 3
                     st.rerun()
         else:
-            # AI 생성 버튼
-            if st.button("🚀 AI 비디오 생성 시작", type="primary", width="stretch"):
-                with st.status("🤖 AI 비디오 생성 중...", expanded=True) as status:
-                    st.write("⏳ Stable Video Diffusion 실행 중...")
-                    st.write("   약 2~5분 소요됩니다.")
+            st.warning("영상이 로드되지 않았습니다.")
+            if st.button("⬅️ 처음으로"):
+                reset_to_step(1)
+                st.rerun()
 
-                    try:
-                        st.session_state.uploaded_image.seek(0)
-                        video_url = generate_video_from_image(
-                            st.session_state.uploaded_image,
-                            REPLICATE_API_TOKEN,
-                            prompt=ai_prompt,
-                            video_length=video_length,
-                            motion_bucket_id=motion_bucket_id,
-                            fps=ai_fps
-                        )
-
-                        st.write("✅ 생성 완료! 다운로드 중...")
-
-                        response = requests.get(video_url)
-                        video_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                        video_temp.write(response.content)
-                        video_temp.close()
-
-                        st.session_state.generated_video_path = video_temp.name
-                        status.update(label="✅ AI 비디오 생성 완료!", state="complete")
-                        st.rerun()
-
-                    except Exception as e:
-                        status.update(label="❌ 생성 실패", state="error")
-                        st.error(f"오류: {str(e)}")
-
-    # ========== STEP 3: 배경 제거 설정 ==========
-    if st.session_state.current_step >= 3 and st.session_state.generated_video_path:
-        st.markdown("---")
+    # ===== STEP 3: 배경 제거 =====
+    elif st.session_state.step == 3:
         st.subheader("⚙️ Step 3: 배경 제거 설정")
 
-        # 비디오에서 첫 프레임 추출
-        cap = cv2.VideoCapture(st.session_state.generated_video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        ret, first_frame = cap.read()
-        cap.release()
-
-        if ret:
-            first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-
-            st.info(f"📹 비디오 정보: {video_width}x{video_height} | {total_frames}프레임")
-
-            # 배경 제거 옵션
-            with st.expander("🎨 배경 제거 옵션", expanded=True):
-                st.markdown("#### 🎯 제거할 배경색 선택 (다중 선택 가능)")
-                st.caption("여러 색상을 추가하여 그라데이션 배경도 깔끔하게 제거할 수 있습니다.")
-
-                # 자동 추출된 배경색 후보 - 큰 사각 박스로 표시
-                dominant_colors = extract_dominant_colors(first_frame_rgb, 8)
-                st.markdown("##### 📌 추천 배경색 (클릭하여 추가)")
-
-                # 색상 박스를 더 크게 표시
-                color_box_html = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;'>"
-                for i, color in enumerate(dominant_colors):
-                    is_in_list = color in st.session_state.bg_colors_to_remove
-                    border = "3px solid #00ff00" if is_in_list else "2px solid #555"
-                    check_mark = "✓" if is_in_list else ""
-                    color_box_html += f"""
-                    <div style='width:60px;height:60px;background:{color};border:{border};border-radius:8px;cursor:pointer;
-                    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);
-                    font-size:24px;color:#fff;text-shadow:0 0 3px #000;'
-                    title='{color}'>{check_mark}</div>
-                    """
-                color_box_html += "</div>"
-                st.markdown(color_box_html, unsafe_allow_html=True)
-
-                # 버튼 형식으로 색상 추가/제거
-                btn_cols = st.columns(len(dominant_colors))
-                for i, color in enumerate(dominant_colors):
-                    with btn_cols[i]:
-                        is_in_list = color in st.session_state.bg_colors_to_remove
-                        btn_label = "제거" if is_in_list else "추가"
-                        if st.button(btn_label, key=f"color_btn_ai_{i}", use_container_width=True):
-                            if is_in_list:
-                                st.session_state.bg_colors_to_remove.remove(color)
-                            else:
-                                st.session_state.bg_colors_to_remove.append(color)
-                            st.rerun()
-
-                st.markdown("---")
-                st.markdown("##### 🔍 이미지에서 직접 선택")
-                st.caption("이미지를 클릭하여 색상 추가")
-
-                # PIL Image로 변환하여 클릭 가능한 이미지 표시
-                frame_pil = Image.fromarray(first_frame_rgb)
-                display_width = min(500, frame_pil.width)
-                scale = display_width / frame_pil.width
-                display_height = int(frame_pil.height * scale)
-                frame_display = frame_pil.resize((display_width, display_height), Image.Resampling.LANCZOS)
-
-                coords = streamlit_image_coordinates(frame_display, key="eyedropper_ai")
-
-                if coords is not None:
-                    orig_x = int(coords["x"] / scale)
-                    orig_y = int(coords["y"] / scale)
-                    picked = get_color_at_position(first_frame_rgb, orig_x, orig_y)
-                    if picked not in st.session_state.bg_colors_to_remove:
-                        st.session_state.bg_colors_to_remove.append(picked)
-                        st.rerun()
-
-                # 현재 선택된 색상 목록 표시
-                st.markdown("---")
-                st.markdown("##### 🎨 제거할 색상 목록")
-
-                if st.session_state.bg_colors_to_remove:
-                    colors_html = "<div style='display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;'>"
-                    for color in st.session_state.bg_colors_to_remove:
-                        colors_html += f"""
-                        <div style='display:flex;flex-direction:column;align-items:center;'>
-                            <div style='width:50px;height:50px;background:{color};border:2px solid #fff;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.3);'></div>
-                            <div style='font-size:10px;color:#aaa;margin-top:4px;'>{color}</div>
-                        </div>
-                        """
-                    colors_html += "</div>"
-                    st.markdown(colors_html, unsafe_allow_html=True)
-
-                    # 개별 색상 제거 버튼
-                    remove_cols = st.columns(min(len(st.session_state.bg_colors_to_remove), 8))
-                    for i, color in enumerate(st.session_state.bg_colors_to_remove[:8]):
-                        with remove_cols[i]:
-                            if st.button("✕", key=f"remove_color_ai_{i}", use_container_width=True):
-                                st.session_state.bg_colors_to_remove.remove(color)
-                                st.rerun()
-
-                    if st.button("🗑️ 모든 색상 초기화", key="clear_colors_ai"):
-                        st.session_state.bg_colors_to_remove = []
-                        st.rerun()
-                else:
-                    st.info("💡 위에서 제거할 배경색을 선택하세요.")
-
-                st.markdown("---")
-                st.markdown("##### ⚙️ 제거 설정")
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    bg_color_hex = st.color_picker("직접 색상 추가", "#ffffff", key="bg_picker_ai")
-                    if st.button("➕ 색상 추가", key="add_custom_color_ai"):
-                        if bg_color_hex not in st.session_state.bg_colors_to_remove:
-                            st.session_state.bg_colors_to_remove.append(bg_color_hex)
-                            st.rerun()
-                with col2:
-                    use_hsv = st.checkbox("🌈 HSV 색상 매칭 (그라데이션 대응)", value=st.session_state.use_hsv, key="use_hsv_ai")
-                    st.session_state.use_hsv = use_hsv
-                    st.caption("비슷한 색조의 그라데이션도 함께 제거")
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    tolerance = st.slider("민감도 (색상 허용 범위)", 0, 150, 80, help="높을수록 비슷한 색상도 제거")
-                with col2:
-                    edge_smoothing = st.slider("경계선 부드럽게", 0.0, 10.0, 1.0, step=0.1, help="높을수록 부드러운 경계")
-
-            # 출력 설정
-            with st.expander("📐 출력 설정", expanded=False):
-                col1, col2 = st.columns(2)
-                with col1:
-                    use_custom_size = st.checkbox("크기 직접 지정")
-                    if use_custom_size:
-                        output_width = st.number_input("너비", 1, 4096, video_width)
-                        output_height = st.number_input("높이", 1, 4096, video_height)
-                    else:
-                        output_width, output_height = video_width, video_height
-
-                with col2:
-                    frame_interval = st.number_input("프레임 추출 간격", 1, 30, 1)
-                    max_frames = st.number_input("최대 프레임", 1, total_frames, min(total_frames, 100))
-
-                gif_speed = st.slider("GIF 속도 (ms/프레임)", 10, 500, 100)
-
-            # 미리보기
-            st.markdown("### 👁️ 미리보기")
-
-            # 다중 색상을 RGB 튜플 리스트로 변환
-            bg_colors_rgb = []
-            for hex_color in st.session_state.bg_colors_to_remove:
-                rgb = tuple(int(hex_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-                bg_colors_rgb.append(rgb)
-
-            # 선택된 색상이 없으면 기본 흰색 사용
-            if not bg_colors_rgb:
-                bg_colors_rgb = [(255, 255, 255)]
-                st.warning("⚠️ 제거할 배경색을 선택해주세요. 기본값(흰색)을 사용합니다.")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**원본**")
-                st.image(first_frame_rgb, width="stretch")
-            with col2:
-                st.markdown("**배경 제거 적용**")
-                preview = process_single_frame(first_frame_rgb, bg_colors_rgb, tolerance, edge_smoothing,
-                                               use_hsv=st.session_state.use_hsv)
-                checker = create_checker_background(preview.width, preview.height)
-                checker.paste(preview, (0, 0), preview)
-                st.image(checker, width="stretch")
-                st.caption("🔲 체크무늬 = 투명 영역")
-
-            # 스프라이트 변환 버튼
-            if st.button("✨ 스프라이트 시트 생성", type="primary", width="stretch"):
-                with st.spinner("변환 중..."):
-                    processed_images, _ = process_video_to_sprites(
-                        st.session_state.generated_video_path,
-                        bg_colors_rgb, tolerance, edge_smoothing,
-                        frame_interval, max_frames, use_custom_size,
-                        output_width, output_height, st.session_state.logo_regions,
-                        use_hsv=st.session_state.use_hsv
-                    )
-                    st.session_state.processed_images = processed_images
-                    st.session_state.gif_speed = gif_speed
-                    st.session_state.current_step = 4
-                    st.rerun()
-
-# ===== 비디오 수정 모드 =====
-else:
-    # ========== STEP 1: 비디오 수정 ==========
-    st.subheader("📤 Step 1: 비디오 수정")
-
-    uploaded_video = st.file_uploader(
-        "비디오 파일 (MP4/MOV/AVI)",
-        type=["mp4", "mov", "avi"],
-        key="video_uploader"
-    )
-
-    if uploaded_video:
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        tfile.write(uploaded_video.read())
-        tfile.close()
-        st.session_state.generated_video_path = tfile.name
-
-        cap = cv2.VideoCapture(tfile.name)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        video_fps = cap.get(cv2.CAP_PROP_FPS)
-        video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        ret, first_frame = cap.read()
-        cap.release()
-
-        st.info(f"📹 비디오 정보: {video_width}x{video_height} | {total_frames}프레임 | {video_fps:.1f}fps")
-
-        if ret:
-            first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-            st.image(first_frame_rgb, caption="첫 프레임", width="stretch")
-
-        st.session_state.current_step = 2
-
-    # ========== STEP 2: 배경 설정 ==========
-    if st.session_state.current_step >= 2 and st.session_state.generated_video_path:
-        st.markdown("---")
-        st.subheader("⚙️ Step 2: 배경 제거 설정")
-
-        cap = cv2.VideoCapture(st.session_state.generated_video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        ret, first_frame = cap.read()
-        cap.release()
-
-        if ret:
-            first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-
-            with st.expander("🎨 배경 제거 옵션", expanded=True):
-                st.markdown("#### 🎯 제거할 배경색 선택 (다중 선택 가능)")
-                st.caption("여러 색상을 추가하여 그라데이션 배경도 깔끔하게 제거할 수 있습니다.")
-
-                # 자동 추출된 배경색 후보 - 큰 사각 박스로 표시
-                dominant_colors_v = extract_dominant_colors(first_frame_rgb, 8)
-                st.markdown("##### 📌 추천 배경색 (클릭하여 추가)")
-
-                # 색상 박스를 더 크게 표시
-                color_box_html_v = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;'>"
-                for i, color in enumerate(dominant_colors_v):
-                    is_in_list = color in st.session_state.bg_colors_to_remove
-                    border = "3px solid #00ff00" if is_in_list else "2px solid #555"
-                    check_mark = "✓" if is_in_list else ""
-                    color_box_html_v += f"""
-                    <div style='width:60px;height:60px;background:{color};border:{border};border-radius:8px;cursor:pointer;
-                    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);
-                    font-size:24px;color:#fff;text-shadow:0 0 3px #000;'
-                    title='{color}'>{check_mark}</div>
-                    """
-                color_box_html_v += "</div>"
-                st.markdown(color_box_html_v, unsafe_allow_html=True)
-
-                # 버튼 형식으로 색상 추가/제거
-                btn_cols_v = st.columns(len(dominant_colors_v))
-                for i, color in enumerate(dominant_colors_v):
-                    with btn_cols_v[i]:
-                        is_in_list = color in st.session_state.bg_colors_to_remove
-                        btn_label = "제거" if is_in_list else "추가"
-                        if st.button(btn_label, key=f"color_btn_video_{i}", use_container_width=True):
-                            if is_in_list:
-                                st.session_state.bg_colors_to_remove.remove(color)
-                            else:
-                                st.session_state.bg_colors_to_remove.append(color)
-                            st.rerun()
-
-                st.markdown("---")
-                st.markdown("##### 🔍 이미지에서 직접 선택")
-                st.caption("이미지를 클릭하여 색상 추가")
-
-                # PIL Image로 변환하여 클릭 가능한 이미지 표시
-                frame_pil_v = Image.fromarray(first_frame_rgb)
-                display_width_v = min(500, frame_pil_v.width)
-                scale_v = display_width_v / frame_pil_v.width
-                display_height_v = int(frame_pil_v.height * scale_v)
-                frame_display_v = frame_pil_v.resize((display_width_v, display_height_v), Image.Resampling.LANCZOS)
-
-                coords_v = streamlit_image_coordinates(frame_display_v, key="eyedropper_video")
-
-                if coords_v is not None:
-                    orig_x_v = int(coords_v["x"] / scale_v)
-                    orig_y_v = int(coords_v["y"] / scale_v)
-                    picked_v = get_color_at_position(first_frame_rgb, orig_x_v, orig_y_v)
-                    if picked_v not in st.session_state.bg_colors_to_remove:
-                        st.session_state.bg_colors_to_remove.append(picked_v)
-                        st.rerun()
-
-                # 현재 선택된 색상 목록 표시
-                st.markdown("---")
-                st.markdown("##### 🎨 제거할 색상 목록")
-
-                if st.session_state.bg_colors_to_remove:
-                    colors_html_v = "<div style='display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;'>"
-                    for color in st.session_state.bg_colors_to_remove:
-                        colors_html_v += f"""
-                        <div style='display:flex;flex-direction:column;align-items:center;'>
-                            <div style='width:50px;height:50px;background:{color};border:2px solid #fff;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.3);'></div>
-                            <div style='font-size:10px;color:#aaa;margin-top:4px;'>{color}</div>
-                        </div>
-                        """
-                    colors_html_v += "</div>"
-                    st.markdown(colors_html_v, unsafe_allow_html=True)
-
-                    # 개별 색상 제거 버튼
-                    remove_cols_v = st.columns(min(len(st.session_state.bg_colors_to_remove), 8))
-                    for i, color in enumerate(st.session_state.bg_colors_to_remove[:8]):
-                        with remove_cols_v[i]:
-                            if st.button("✕", key=f"remove_color_video_{i}", use_container_width=True):
-                                st.session_state.bg_colors_to_remove.remove(color)
-                                st.rerun()
-
-                    if st.button("🗑️ 모든 색상 초기화", key="clear_colors_video"):
-                        st.session_state.bg_colors_to_remove = []
-                        st.rerun()
-                else:
-                    st.info("💡 위에서 제거할 배경색을 선택하세요.")
-
-                st.markdown("---")
-                st.markdown("##### ⚙️ 제거 설정")
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    bg_color_hex_v = st.color_picker("직접 색상 추가", "#ffffff", key="video_bg")
-                    if st.button("➕ 색상 추가", key="add_custom_color_video"):
-                        if bg_color_hex_v not in st.session_state.bg_colors_to_remove:
-                            st.session_state.bg_colors_to_remove.append(bg_color_hex_v)
-                            st.rerun()
-                with col2:
-                    use_hsv_v = st.checkbox("🌈 HSV 색상 매칭 (그라데이션 대응)", value=st.session_state.use_hsv, key="use_hsv_video")
-                    st.session_state.use_hsv = use_hsv_v
-                    st.caption("비슷한 색조의 그라데이션도 함께 제거")
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    tolerance = st.slider("민감도 (색상 허용 범위)", 0, 150, 80, key="video_tol", help="높을수록 비슷한 색상도 제거")
-                with col2:
-                    edge_smoothing = st.slider("경계선 부드럽게", 0.0, 10.0, 1.0, step=0.1, key="video_edge", help="높을수록 부드러운 경계")
-
-            with st.expander("📐 출력 설정", expanded=False):
-                col1, col2 = st.columns(2)
-                with col1:
-                    use_custom_size = st.checkbox("크기 직접 지정", key="video_custom")
-                    if use_custom_size:
-                        output_width = st.number_input("너비", 1, 4096, video_width, key="video_w")
-                        output_height = st.number_input("높이", 1, 4096, video_height, key="video_h")
-                    else:
-                        output_width, output_height = video_width, video_height
-                with col2:
-                    frame_interval = st.number_input("추출 간격", 1, 30, 1, key="video_int")
-                    max_frames = st.number_input("최대 프레임", 1, total_frames, min(total_frames, 100), key="video_max")
-
-                gif_speed = st.slider("GIF 속도", 10, 500, 100, key="video_gif")
-
-            # 미리보기
-            st.markdown("### 👁️ 미리보기")
-
-            # 다중 색상을 RGB 튜플 리스트로 변환
-            bg_colors_rgb_v = []
-            for hex_color in st.session_state.bg_colors_to_remove:
-                rgb = tuple(int(hex_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-                bg_colors_rgb_v.append(rgb)
-
-            # 선택된 색상이 없으면 기본 흰색 사용
-            if not bg_colors_rgb_v:
-                bg_colors_rgb_v = [(255, 255, 255)]
-                st.warning("⚠️ 제거할 배경색을 선택해주세요. 기본값(흰색)을 사용합니다.")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**원본**")
-                st.image(first_frame_rgb, width="stretch")
-            with col2:
-                st.markdown("**배경 제거 적용**")
-                preview = process_single_frame(first_frame_rgb, bg_colors_rgb_v, tolerance, edge_smoothing,
-                                               use_hsv=st.session_state.use_hsv)
-                checker = create_checker_background(preview.width, preview.height)
-                checker.paste(preview, (0, 0), preview)
-                st.image(checker, width="stretch")
-                st.caption("🔲 체크무늬 = 투명 영역")
-
-            if st.button("✨ 스프라이트 시트 생성", type="primary", width="stretch", key="video_convert"):
-                with st.spinner("변환 중..."):
-                    processed_images, _ = process_video_to_sprites(
-                        st.session_state.generated_video_path,
-                        bg_colors_rgb_v, tolerance, edge_smoothing,
-                        frame_interval, max_frames, use_custom_size,
-                        output_width, output_height, [],
-                        use_hsv=st.session_state.use_hsv
-                    )
-                    st.session_state.processed_images = processed_images
-                    st.session_state.gif_speed = gif_speed
-                    st.session_state.current_step = 3
-                    st.rerun()
-
-# ===== 결과물 표시 =====
-if st.session_state.processed_images:
-    st.markdown("---")
-    st.header("📦 결과물")
-
-    processed_pil_images = st.session_state.processed_images
-    current_gif_speed = st.session_state.get('gif_speed', 100)
-
-    tab1, tab2, tab3 = st.tabs(["🎬 GIF", "📄 스프라이트 시트", "🖼️ 프레임 선택"])
-
-    with tab1:
-        # RGBA 이미지를 투명 배경 GIF로 올바르게 변환 (개선된 알고리즘)
-        gif_buffer = io.BytesIO()
-        converted_frames = create_clean_gif_frames(processed_pil_images)
-
-        if converted_frames:
-            first_frame, first_trans = converted_frames[0]
-            append_frames = [f[0] for f in converted_frames[1:]]
-            first_frame.save(
-                gif_buffer, format="GIF", save_all=True,
-                append_images=append_frames,
-                duration=current_gif_speed, loop=0, disposal=2,
-                transparency=first_trans if first_trans is not None else 0
-            )
-
-        st.image(gif_buffer.getvalue(), caption="투명 배경 GIF")
-
-        # APNG도 생성 (완벽한 투명도 지원)
-        apng_buffer = io.BytesIO()
-        processed_pil_images[0].save(
-            apng_buffer, format="PNG", save_all=True,
-            append_images=processed_pil_images[1:],
-            duration=current_gif_speed, loop=0
-        )
-
-        dl_col1, dl_col2 = st.columns(2)
-        with dl_col1:
-            st.download_button("🎬 GIF 다운로드", gif_buffer.getvalue(), "animation.gif", "image/gif", width="stretch")
-        with dl_col2:
-            st.download_button("🖼️ APNG 다운로드 (권장)", apng_buffer.getvalue(), "animation.png", "image/png", width="stretch",
-                              help="APNG는 완벽한 투명도를 지원합니다.")
-
-    with tab2:
-        sheet_cols = st.number_input("열 수 (0=가로 한 줄)", 0, len(processed_pil_images), 0)
-        sprite_sheet = create_sprite_sheet(processed_pil_images, sheet_cols)
-        sheet_buffer = io.BytesIO()
-        sprite_sheet.save(sheet_buffer, format="PNG")
-        st.image(sprite_sheet, caption=f"스프라이트 시트 ({sprite_sheet.width}x{sprite_sheet.height})")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button("📄 PNG 저장", sheet_buffer.getvalue(), "sprite_sheet.png", "image/png", width="stretch")
-        with col2:
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w") as zf:
-                for idx, img in enumerate(processed_pil_images):
-                    img_arr = io.BytesIO()
-                    img.save(img_arr, format="PNG")
-                    zf.writestr(f"frame_{idx:03d}.png", img_arr.getvalue())
-            st.download_button("📦 ZIP 저장", zip_buffer.getvalue(), "frames.zip", "application/zip", width="stretch")
-
-    with tab3:
-        st.markdown("### 🖼️ 프레임 선택")
-        st.caption("원하는 프레임을 선택하여 스프라이트 시트 또는 GIF를 생성하세요.")
-
-        if 'selected_frames' not in st.session_state:
-            st.session_state.selected_frames = list(range(len(processed_pil_images)))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ 전체 선택", width="stretch"):
-                st.session_state.selected_frames = list(range(len(processed_pil_images)))
-                st.rerun()
-        with col2:
-            if st.button("❌ 전체 해제", width="stretch"):
-                st.session_state.selected_frames = []
-                st.rerun()
-
-        cols_per_row = 6
-        for row_start in range(0, len(processed_pil_images), cols_per_row):
-            cols = st.columns(cols_per_row)
-            for col_idx, img_idx in enumerate(range(row_start, min(row_start + cols_per_row, len(processed_pil_images)))):
-                with cols[col_idx]:
-                    is_sel = img_idx in st.session_state.selected_frames
-                    if st.checkbox(f"#{img_idx+1}", value=is_sel, key=f"sel_{img_idx}"):
-                        if img_idx not in st.session_state.selected_frames:
-                            st.session_state.selected_frames.append(img_idx)
-                    else:
-                        if img_idx in st.session_state.selected_frames:
-                            st.session_state.selected_frames.remove(img_idx)
-                    thumb = processed_pil_images[img_idx].copy()
-                    thumb.thumbnail((80, 80))
-                    st.image(thumb)
-
-        if st.session_state.selected_frames:
-            st.info(f"✅ 선택된 프레임: {len(st.session_state.selected_frames)}개")
-            selected_imgs = [processed_pil_images[i] for i in sorted(st.session_state.selected_frames)]
+        if st.session_state.video_frames:
+            first_frame = st.session_state.video_frames[0]
+            render_background_removal_ui(first_frame)  # 공통 함수 사용
 
             st.markdown("---")
-            st.markdown("#### ⚙️ 선택 프레임 출력 설정")
 
-            sel_col1, sel_col2 = st.columns(2)
-            with sel_col1:
-                custom_cols = st.number_input("스프라이트 시트 열 수 (0=가로 한 줄)", 0, len(selected_imgs), 0, key="custom_cols")
-            with sel_col2:
-                custom_gif_speed = st.slider("GIF 속도 (ms/프레임)", 10, 500, current_gif_speed, key="custom_gif_speed")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("⬅️ 이전", use_container_width=True):
+                    st.session_state.step = 2
+                    st.rerun()
+            with col2:
+                if st.button("✨ 전체 프레임 처리", type="primary", use_container_width=True):
+                    with st.spinner("처리 중..."):
+                        process_all_frames()
+                    st.session_state.step = 4
+                    st.rerun()
+        else:
+            st.error("프레임이 없습니다.")
 
-            # 스프라이트 시트 미리보기
-            st.markdown("#### 📄 스프라이트 시트 미리보기")
-            custom_sheet = create_sprite_sheet(selected_imgs, custom_cols)
-            custom_buf = io.BytesIO()
-            custom_sheet.save(custom_buf, format="PNG")
-            st.image(custom_sheet, caption=f"선택된 프레임 스프라이트 시트 ({custom_sheet.width}x{custom_sheet.height})")
+    # ===== STEP 4: 프레임 선택 =====
+    elif st.session_state.step == 4:
+        st.subheader("🖼️ Step 4: 프레임 선택")
 
-            # GIF 미리보기
-            st.markdown("#### 🎬 선택 프레임 GIF 미리보기")
+        render_frame_selection_ui()  # 공통 함수 사용
 
-            # 선택된 프레임으로 GIF 생성 (개선된 알고리즘 사용)
-            custom_gif_buffer = io.BytesIO()
-            custom_gif_frames = create_clean_gif_frames(selected_imgs)
+        st.markdown("---")
 
-            if custom_gif_frames:
-                first_frame, first_trans = custom_gif_frames[0]
-                append_frames = [f[0] for f in custom_gif_frames[1:]]
-                first_frame.save(
-                    custom_gif_buffer, format="GIF", save_all=True,
-                    append_images=append_frames,
-                    duration=custom_gif_speed, loop=0, disposal=2,
-                    transparency=first_trans if first_trans is not None else 0
-                )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("⬅️ 배경 다시 설정", use_container_width=True):
+                st.session_state.step = 3
+                st.rerun()
+        with col2:
+            if st.session_state.selected_frame_indices:
+                if st.button("➡️ 다운로드", type="primary", use_container_width=True):
+                    st.session_state.step = 5
+                    st.rerun()
+            else:
+                st.button("➡️ 다운로드", type="primary", use_container_width=True, disabled=True)
+                st.caption("프레임을 선택해주세요")
 
-            st.image(custom_gif_buffer.getvalue(), caption="선택된 프레임 GIF")
+    # ===== STEP 5: 다운로드 =====
+    elif st.session_state.step == 5:
+        st.subheader("📥 Step 5: 다운로드")
 
-            # APNG 생성
-            custom_apng_buffer = io.BytesIO()
-            selected_imgs[0].save(
-                custom_apng_buffer, format="PNG", save_all=True,
-                append_images=selected_imgs[1:],
-                duration=custom_gif_speed, loop=0
-            )
+        render_download_ui()
 
-            # 다운로드 버튼
-            st.markdown("#### 📥 다운로드")
-            dl_col1, dl_col2, dl_col3, dl_col4 = st.columns(4)
-            with dl_col1:
-                st.download_button("📄 스프라이트 시트", custom_buf.getvalue(), "custom_sprite_sheet.png", "image/png", width="stretch")
-            with dl_col2:
-                st.download_button("🎬 GIF", custom_gif_buffer.getvalue(), "custom_animation.gif", "image/gif", width="stretch")
-            with dl_col3:
-                st.download_button("🖼️ APNG (권장)", custom_apng_buffer.getvalue(), "custom_animation.png", "image/png", width="stretch")
-            with dl_col4:
-                # ZIP 다운로드
-                custom_zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(custom_zip_buffer, "w") as zf:
-                    for idx, img in enumerate(selected_imgs):
-                        img_arr = io.BytesIO()
-                        img.save(img_arr, format="PNG")
-                        zf.writestr(f"frame_{idx:03d}.png", img_arr.getvalue())
-                st.download_button("📦 ZIP", custom_zip_buffer.getvalue(), "custom_frames.zip", "application/zip", width="stretch")
+        st.markdown("---")
 
-    # 처음부터 다시하기
-    st.markdown("---")
-    if st.button("🔄 처음부터 다시하기", width="stretch"):
-        st.session_state.current_step = 1
-        st.session_state.uploaded_image = None
-        st.session_state.generated_video_path = None
-        st.session_state.processed_images = []
-        st.session_state.selected_frames = []
-        st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("⬅️ 프레임 다시 선택", use_container_width=True):
+                st.session_state.step = 4
+                st.rerun()
+        with col2:
+            if st.button("🔄 처음부터", use_container_width=True):
+                reset_to_step(1)
+                st.rerun()
+
+if __name__ == "__main__":
+    main()
