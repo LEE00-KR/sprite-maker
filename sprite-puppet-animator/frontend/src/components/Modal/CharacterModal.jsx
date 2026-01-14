@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../../stores/useStore'
-import { X, Trash2 } from 'lucide-react'
+import { X, Trash2, Loader } from 'lucide-react'
 import { api } from '../../utils/api'
 
 function CharacterModal() {
-  const { ui, closeCharacterModal, setLoading, addToast } = useStore()
+  const { ui, closeCharacterModal, loadCharacter, setLoading, addToast } = useStore()
   const [characters, setCharacters] = useState([])
+  const [isLoading, setIsLoading] = useState(false)
 
   useEffect(() => {
     if (ui.showCharacterModal) {
@@ -14,26 +15,28 @@ function CharacterModal() {
   }, [ui.showCharacterModal])
 
   const loadCharacters = async () => {
+    setIsLoading(true)
     try {
       const data = await api.getCharacters()
-      setCharacters(data)
+      setCharacters(Array.isArray(data) ? data : [])
     } catch (error) {
       console.error('캐릭터 목록 로드 실패:', error)
-      // 데모용 더미 데이터
-      setCharacters([
-        { id: '1', name: '기사 캐릭터', thumbnail: null, layers_count: 3, joints_count: 5 },
-        { id: '2', name: '마법사', thumbnail: null, layers_count: 4, joints_count: 7 },
-      ])
+      setCharacters([])
+      addToast('서버 연결에 실패했습니다.', 'warning')
+    } finally {
+      setIsLoading(false)
     }
   }
 
   const handleLoad = async (characterId) => {
     try {
       setLoading(true, '캐릭터 불러오는 중...')
-      
-      const character = await api.getCharacter(characterId)
-      // TODO: 상태에 로드
-      
+
+      const characterData = await api.getCharacter(characterId)
+
+      // 상태에 캐릭터 데이터 로드
+      loadCharacter(characterData)
+
       addToast('캐릭터를 불러왔습니다.', 'success')
       closeCharacterModal()
 
@@ -73,7 +76,15 @@ function CharacterModal() {
         </div>
 
         <div className="modal__body">
-          {characters.length === 0 ? (
+          {isLoading ? (
+            <div style={{ textAlign: 'center', padding: 40 }}>
+              <Loader
+                size={32}
+                style={{ animation: 'spin 1s linear infinite', marginBottom: 8 }}
+              />
+              <div style={{ color: 'var(--text-muted)' }}>불러오는 중...</div>
+            </div>
+          ) : characters.length === 0 ? (
             <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
               저장된 캐릭터가 없습니다.
             </div>

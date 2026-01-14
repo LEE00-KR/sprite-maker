@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useCallback } from 'react'
 import { useStore } from './stores/useStore'
 
 // Components
@@ -12,11 +12,34 @@ import Toast from './components/Toast'
 import Loading from './components/Loading'
 
 function App() {
-  const { isLoading, initApp } = useStore()
+  const { isLoading, initApp, undo, redo, canUndo, canRedo } = useStore()
 
   useEffect(() => {
     initApp()
   }, [])
+
+  // 키보드 단축키 처리
+  const handleKeyDown = useCallback((e) => {
+    // Ctrl+Z: Undo
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+      e.preventDefault()
+      if (canUndo()) {
+        undo()
+      }
+    }
+    // Ctrl+Y 또는 Ctrl+Shift+Z: Redo
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      e.preventDefault()
+      if (canRedo()) {
+        redo()
+      }
+    }
+  }, [undo, redo, canUndo, canRedo])
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleKeyDown])
 
   return (
     <div className="app">
