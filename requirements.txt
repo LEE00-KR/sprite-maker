@@ -1,8 +1,0 @@
-streamlit
-opencv-python-headless
-numpy
-Pillow
-streamlit-image-coordinates
-replicate
-requests
-python-dotenv
