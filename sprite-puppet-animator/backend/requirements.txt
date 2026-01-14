@@ -8,10 +8,10 @@ motor==3.3.2
 pymongo==4.6.1
 
 # Image Processing
-Pillow==10.2.0
-opencv-python-headless==4.9.0.80
-rembg==2.0.53
-numpy==1.26.3
+Pillow>=10.4.0
+opencv-python-headless>=4.9.0.80
+rembg>=2.0.53
+numpy>=1.26.3
 
 # Validation & Serialization
 pydantic==2.5.3
