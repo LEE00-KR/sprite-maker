@@ -1,16 +1,20 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import { useStore } from '../../stores/useStore'
-import { ZoomIn, ZoomOut, Maximize } from 'lucide-react'
+import { ZoomIn, ZoomOut, Maximize, Play, Pause } from 'lucide-react'
+import { getAllJointPositionsAtFrame, getLayerTransformFromJoints } from '../../utils/animation'
 
 function PuppetWorkspace() {
   const canvasRef = useRef(null)
   const containerRef = useRef(null)
-  
-  const { 
-    character, 
+  const imageCache = useRef({})
+
+  const {
+    character,
     currentTool,
     canvas,
     selection,
+    timeline,
+    currentMotion,
     addJoint,
     addBone,
     updateJoint,
@@ -20,6 +24,8 @@ function PuppetWorkspace() {
     zoomIn,
     zoomOut,
     resetZoom,
+    togglePlay,
+    addKeyframe,
     addToast,
   } = useStore()
 
@@ -27,15 +33,65 @@ function PuppetWorkspace() {
   const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 })
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
   const [selectedJointForBone, setSelectedJointForBone] = useState(null)
+  const [loadedImages, setLoadedImages] = useState({})
+
+  // 애니메이션된 관절 위치 계산
+  const animatedJointPositions = useMemo(() => {
+    if (currentMotion.keyframes.length === 0) {
+      // 키프레임이 없으면 원본 위치 사용
+      return character.joints.reduce((acc, joint) => {
+        acc[joint.id] = { x: joint.x, y: joint.y, rotation: 0 }
+        return acc
+      }, {})
+    }
+    return getAllJointPositionsAtFrame(
+      character.joints,
+      timeline.currentFrame,
+      currentMotion.keyframes
+    )
+  }, [character.joints, timeline.currentFrame, currentMotion.keyframes])
+
+  // 이미지 프리로드
+  useEffect(() => {
+    const newImages = {}
+    let loadCount = 0
+    const totalImages = character.layers.filter((l) => l.imageData).length
+
+    if (totalImages === 0) return
+
+    character.layers.forEach((layer) => {
+      if (layer.imageData && !imageCache.current[layer.id]) {
+        const img = new Image()
+        img.onload = () => {
+          imageCache.current[layer.id] = img
+          loadCount++
+          if (loadCount === totalImages) {
+            setLoadedImages({ ...imageCache.current })
+          }
+        }
+        img.onerror = () => {
+          loadCount++
+        }
+        img.src = layer.imageData
+      } else if (imageCache.current[layer.id]) {
+        newImages[layer.id] = imageCache.current[layer.id]
+      }
+    })
+
+    if (Object.keys(newImages).length === totalImages) {
+      setLoadedImages(newImages)
+    }
+  }, [character.layers])
 
   // 캔버스 그리기
-  useEffect(() => {
+  const draw = useCallback(() => {
     const ctx = canvasRef.current?.getContext('2d')
     if (!ctx) return
 
     const canvasEl = canvasRef.current
     const container = containerRef.current
-    
+    if (!container) return
+
     // 캔버스 크기 설정
     canvasEl.width = container.clientWidth
     canvasEl.height = container.clientHeight
@@ -43,7 +99,7 @@ function PuppetWorkspace() {
     // 클리어
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height)
 
-    // 변환 적용
+    // 배경 격자 그리기
     ctx.save()
     ctx.translate(canvasEl.width / 2 + panOffset.x, canvasEl.height / 2 + panOffset.y)
     ctx.scale(canvas.zoom, canvas.zoom)
@@ -53,48 +109,54 @@ function PuppetWorkspace() {
       .filter((layer) => layer.visible)
       .sort((a, b) => a.order - b.order)
       .forEach((layer) => {
-        if (layer.imageData) {
-          const img = new Image()
-          img.src = layer.imageData
-          
-          // 이미지가 로드되면 그리기
-          img.onload = () => {
-            ctx.save()
-            ctx.translate(layer.transform?.x || 0, layer.transform?.y || 0)
-            ctx.rotate((layer.transform?.rotation || 0) * Math.PI / 180)
-            ctx.scale(layer.transform?.scaleX || 1, layer.transform?.scaleY || 1)
-            ctx.globalAlpha = layer.opacity
-            ctx.drawImage(img, -img.width / 2, -img.height / 2)
-            ctx.restore()
-          }
+        const img = imageCache.current[layer.id]
+        if (img) {
+          ctx.save()
+
+          // 애니메이션 적용된 변환 계산
+          const transform = getLayerTransformFromJoints(
+            layer,
+            animatedJointPositions,
+            character.joints
+          )
+
+          ctx.translate(transform.x, transform.y)
+          ctx.rotate((transform.rotation) * Math.PI / 180)
+          ctx.scale(transform.scaleX, transform.scaleY)
+          ctx.globalAlpha = layer.opacity
+          ctx.drawImage(img, -img.width / 2, -img.height / 2)
+          ctx.restore()
         }
       })
 
-    // 뼈대 그리기
+    // 뼈대 그리기 (애니메이션된 위치 사용)
     character.bones.forEach((bone) => {
-      const startJoint = character.joints.find((j) => j.id === bone.startJointId)
-      const endJoint = character.joints.find((j) => j.id === bone.endJointId)
-      
-      if (startJoint && endJoint) {
+      const startPos = animatedJointPositions[bone.startJointId]
+      const endPos = animatedJointPositions[bone.endJointId]
+
+      if (startPos && endPos) {
         ctx.beginPath()
-        ctx.moveTo(startJoint.x, startJoint.y)
-        ctx.lineTo(endJoint.x, endJoint.y)
+        ctx.moveTo(startPos.x, startPos.y)
+        ctx.lineTo(endPos.x, endPos.y)
         ctx.strokeStyle = '#94a3b8'
         ctx.lineWidth = 3 / canvas.zoom
         ctx.stroke()
       }
     })
 
-    // 관절 그리기
+    // 관절 그리기 (애니메이션된 위치 사용)
     character.joints.forEach((joint) => {
+      const pos = animatedJointPositions[joint.id]
+      if (!pos) return
+
       const isSelected = selection.joints.includes(joint.id)
       const radius = 8 / canvas.zoom
-      
+
       ctx.beginPath()
-      ctx.arc(joint.x, joint.y, radius, 0, Math.PI * 2)
+      ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2)
       ctx.fillStyle = isSelected ? '#22d3ee' : joint.color
       ctx.fill()
-      
+
       if (isSelected) {
         ctx.strokeStyle = '#ffffff'
         ctx.lineWidth = 2 / canvas.zoom
@@ -103,7 +165,30 @@ function PuppetWorkspace() {
     })
 
     ctx.restore()
-  }, [character, canvas, panOffset, selection])
+  }, [character, canvas, panOffset, selection, animatedJointPositions, loadedImages])
+
+  // 캔버스 그리기 실행
+  useEffect(() => {
+    draw()
+  }, [draw])
+
+  // 애니메이션 프레임 업데이트 (재생 중일 때 부드러운 렌더링)
+  useEffect(() => {
+    if (!timeline.isPlaying) return
+
+    let animationId
+    const animate = () => {
+      draw()
+      animationId = requestAnimationFrame(animate)
+    }
+    animationId = requestAnimationFrame(animate)
+
+    return () => {
+      if (animationId) {
+        cancelAnimationFrame(animationId)
+      }
+    }
+  }, [timeline.isPlaying, draw])
 
   // 마우스 좌표를 캔버스 좌표로 변환
   const getCanvasCoords = (e) => {
@@ -120,12 +205,14 @@ function PuppetWorkspace() {
     return { x, y }
   }
 
-  // 관절 찾기
+  // 관절 찾기 (애니메이션된 위치 기반)
   const findJointAt = (x, y) => {
     const threshold = 15 / canvas.zoom
     return character.joints.find((joint) => {
-      const dx = joint.x - x
-      const dy = joint.y - y
+      const pos = animatedJointPositions[joint.id]
+      if (!pos) return false
+      const dx = pos.x - x
+      const dy = pos.y - y
       return Math.sqrt(dx * dx + dy * dy) < threshold
     })
   }
@@ -192,7 +279,18 @@ function PuppetWorkspace() {
     if (e.buttons === 1 && selection.joints.length > 0 && currentTool === 'select') {
       const { x, y } = getCanvasCoords(e)
       selection.joints.forEach((jointId) => {
-        updateJoint(jointId, { x, y })
+        // 키프레임이 있으면 키프레임 업데이트, 없으면 원본 위치 업데이트
+        const hasKeyframes = currentMotion.keyframes.some(
+          (kf) => kf.jointId === jointId
+        )
+
+        if (hasKeyframes) {
+          // 현재 프레임에 키프레임 추가/업데이트
+          addKeyframe(jointId, timeline.currentFrame, { x, y })
+        } else {
+          // 원본 관절 위치 업데이트
+          updateJoint(jointId, { x, y })
+        }
       })
     }
   }
@@ -244,6 +342,21 @@ function PuppetWorkspace() {
 
         {/* 캔버스 컨트롤 */}
         <div className="canvas-controls">
+          <button
+            className={`btn btn--icon btn--sm ${timeline.isPlaying ? 'active' : ''}`}
+            onClick={togglePlay}
+            title={timeline.isPlaying ? '일시정지' : '재생'}
+            style={{
+              background: timeline.isPlaying ? 'var(--primary)' : undefined,
+              color: timeline.isPlaying ? 'white' : undefined,
+            }}
+          >
+            {timeline.isPlaying ? <Pause size={16} /> : <Play size={16} />}
+          </button>
+          <span style={{ minWidth: 60, textAlign: 'center', fontSize: 11, opacity: 0.8 }}>
+            {timeline.currentFrame} / {currentMotion.frameCount - 1}
+          </span>
+          <div style={{ width: 1, height: 16, background: 'var(--border)' }} />
           <button className="btn btn--icon btn--sm" onClick={zoomOut} title="축소">
             <ZoomOut size={16} />
           </button>
