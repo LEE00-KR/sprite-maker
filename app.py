@@ -904,6 +904,11 @@ REPLICATE_API_TOKEN = "your_token_here"
                         st.success("✅ API 토큰 설정됨")
 
                         with st.expander("🎬 AI 생성 옵션", expanded=True):
+                            ai_prompt = st.text_input(
+                                "프롬프트 (선택사항)",
+                                placeholder="예: walking animation, running cycle...",
+                                help="생성할 영상의 움직임을 설명하세요"
+                            )
                             motion = st.slider("모션 강도", 1, 255, 60, help="높을수록 움직임 큼")
                             video_length = st.selectbox(
                                 "비디오 길이",
@@ -922,6 +927,7 @@ REPLICATE_API_TOKEN = "your_token_here"
                                     video_url = generate_video_from_image(
                                         st.session_state.uploaded_image,
                                         REPLICATE_API_TOKEN,
+                                        prompt=ai_prompt,
                                         video_length=video_length,
                                         motion_bucket_id=motion,
                                         fps=ai_fps
