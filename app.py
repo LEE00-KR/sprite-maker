@@ -588,19 +588,14 @@ REPLICATE_API_TOKEN = "your_token_here"
                 dominant_colors = extract_dominant_colors(first_frame_rgb, 8)
                 st.markdown("##### 📌 추천 배경색 (클릭하여 추가)")
 
-                # 색상 박스를 더 크게 표시
-                color_box_html = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;'>"
+                # 색상 박스를 더 크게 표시 (한 줄로 정리하여 HTML 노출 방지)
+                color_box_html = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;">'
                 for i, color in enumerate(dominant_colors):
                     is_in_list = color in st.session_state.bg_colors_to_remove
                     border = "3px solid #00ff00" if is_in_list else "2px solid #555"
                     check_mark = "✓" if is_in_list else ""
-                    color_box_html += f"""
-                    <div style='width:60px;height:60px;background:{color};border:{border};border-radius:8px;cursor:pointer;
-                    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);
-                    font-size:24px;color:#fff;text-shadow:0 0 3px #000;'
-                    title='{color}'>{check_mark}</div>
-                    """
-                color_box_html += "</div>"
+                    color_box_html += f'<div style="width:60px;height:60px;background:{color};border:{border};border-radius:8px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);font-size:24px;color:#fff;text-shadow:0 0 3px #000;" title="{color}">{check_mark}</div>'
+                color_box_html += '</div>'
                 st.markdown(color_box_html, unsafe_allow_html=True)
 
                 # 버튼 형식으로 색상 추가/제거
@@ -642,15 +637,10 @@ REPLICATE_API_TOKEN = "your_token_here"
                 st.markdown("##### 🎨 제거할 색상 목록")
 
                 if st.session_state.bg_colors_to_remove:
-                    colors_html = "<div style='display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;'>"
+                    colors_html = '<div style="display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;">'
                     for color in st.session_state.bg_colors_to_remove:
-                        colors_html += f"""
-                        <div style='display:flex;flex-direction:column;align-items:center;'>
-                            <div style='width:50px;height:50px;background:{color};border:2px solid #fff;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.3);'></div>
-                            <div style='font-size:10px;color:#aaa;margin-top:4px;'>{color}</div>
-                        </div>
-                        """
-                    colors_html += "</div>"
+                        colors_html += f'<div style="display:flex;flex-direction:column;align-items:center;"><div style="width:50px;height:50px;background:{color};border:2px solid #fff;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div><div style="font-size:10px;color:#aaa;margin-top:4px;">{color}</div></div>'
+                    colors_html += '</div>'
                     st.markdown(colors_html, unsafe_allow_html=True)
 
                     # 개별 색상 제거 버튼
@@ -803,19 +793,14 @@ else:
                 dominant_colors_v = extract_dominant_colors(first_frame_rgb, 8)
                 st.markdown("##### 📌 추천 배경색 (클릭하여 추가)")
 
-                # 색상 박스를 더 크게 표시
-                color_box_html_v = "<div style='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;'>"
+                # 색상 박스를 더 크게 표시 (한 줄로 정리하여 HTML 노출 방지)
+                color_box_html_v = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px;">'
                 for i, color in enumerate(dominant_colors_v):
                     is_in_list = color in st.session_state.bg_colors_to_remove
                     border = "3px solid #00ff00" if is_in_list else "2px solid #555"
                     check_mark = "✓" if is_in_list else ""
-                    color_box_html_v += f"""
-                    <div style='width:60px;height:60px;background:{color};border:{border};border-radius:8px;cursor:pointer;
-                    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);
-                    font-size:24px;color:#fff;text-shadow:0 0 3px #000;'
-                    title='{color}'>{check_mark}</div>
-                    """
-                color_box_html_v += "</div>"
+                    color_box_html_v += f'<div style="width:60px;height:60px;background:{color};border:{border};border-radius:8px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 4px rgba(0,0,0,0.2);font-size:24px;color:#fff;text-shadow:0 0 3px #000;" title="{color}">{check_mark}</div>'
+                color_box_html_v += '</div>'
                 st.markdown(color_box_html_v, unsafe_allow_html=True)
 
                 # 버튼 형식으로 색상 추가/제거
@@ -857,15 +842,10 @@ else:
                 st.markdown("##### 🎨 제거할 색상 목록")
 
                 if st.session_state.bg_colors_to_remove:
-                    colors_html_v = "<div style='display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;'>"
+                    colors_html_v = '<div style="display:flex;flex-wrap:wrap;gap:10px;padding:15px;background:#1e1e1e;border-radius:8px;">'
                     for color in st.session_state.bg_colors_to_remove:
-                        colors_html_v += f"""
-                        <div style='display:flex;flex-direction:column;align-items:center;'>
-                            <div style='width:50px;height:50px;background:{color};border:2px solid #fff;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.3);'></div>
-                            <div style='font-size:10px;color:#aaa;margin-top:4px;'>{color}</div>
-                        </div>
-                        """
-                    colors_html_v += "</div>"
+                        colors_html_v += f'<div style="display:flex;flex-direction:column;align-items:center;"><div style="width:50px;height:50px;background:{color};border:2px solid #fff;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div><div style="font-size:10px;color:#aaa;margin-top:4px;">{color}</div></div>'
+                    colors_html_v += '</div>'
                     st.markdown(colors_html_v, unsafe_allow_html=True)
 
                     # 개별 색상 제거 버튼
