@@ -1,0 +1,29 @@
+{
+  "name": "sprite-puppet-animator",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.5.0",
+    "pixi.js": "^7.3.2",
+    "@pixi/react": "^7.1.1",
+    "fabric": "^5.3.1",
+    "axios": "^1.6.5",
+    "lucide-react": "^0.312.0",
+    "clsx": "^2.1.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.0.12"
+  }
+}
